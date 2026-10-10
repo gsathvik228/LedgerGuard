@@ -1,145 +1,275 @@
-# LedgerGuard — Transaction Processing & Fraud Detection
+# LedgerGuard
 
-A working local development ledger built with Spring Boot, MySQL, React, TypeScript, and Vite. It includes customer banking flows, JWT authentication, deterministic fraud decisions, and admin monitoring. It does not connect to real payment networks.
+**Transaction processing with explainable, rule-based fraud detection.**
 
-## Open the running application
+LedgerGuard is a full-stack portfolio application for managing accounts, transferring funds, and reviewing suspicious activity. Customers can track their balances and transaction history, while administrators can monitor activity across the ledger and inspect the reasons behind each fraud decision.
 
-- Frontend: http://127.0.0.1:5173
-- Backend: http://127.0.0.1:8080
-- API documentation: http://127.0.0.1:8080/swagger-ui/index.html
-- Private demo logins: `.local/demo-credentials.json` (open locally in VS Code; do not share or commit).
-- Latest verification results and demo account/transaction IDs: `.local/verification-latest.json`.
+The project demonstrates transactional consistency, role-based authorization, concurrent account updates, and a React interface backed by real APIs. It is a development banking simulation; deposits and withdrawals do not connect to external payment networks.
 
-The API root is not a public landing page; use the frontend or API documentation. Two demo customers and a development admin were created. Existing database records were preserved.
+## Features
 
-## Native Windows startup
+| Area | Capabilities |
+| --- | --- |
+| Authentication | Registration, BCrypt password hashing, expiring JWTs, persistent sign-in, logout, and protected routes |
+| Accounts | Checking and savings accounts, zero opening balance in the UI, and balances grouped by currency |
+| Money movement | Deposits, withdrawals, and same-currency transfers with ownership, account status, and balance checks |
+| Transaction history | Incoming and outgoing activity, type/status/risk/date filters, server-side pagination, and transaction details |
+| Fraud analysis | Risk scores, triggered rules, decision explanations, and persisted blocked attempts |
+| Administration | Activity metrics, charts, paginated transaction monitoring, and high/critical-risk review |
 
-Use the installed Java 25, Node/npm, native MySQL, and the checked-in Maven Wrapper. The Java compilation target remains 21. No additional system software, Docker, WSL, global Maven, or browser automation package is needed.
+## Architecture
 
-The existing MySQL service must be running. Database `fraud_db` and user `fraud_app` have already been configured. Do not rerun provisioning or reset data during ordinary startup.
+LedgerGuard uses a Spring Boot monolith with a separate React frontend.
 
-Backend terminal:
+```mermaid
+flowchart LR
+    UI["React + TypeScript"] -->|"Axios /api requests"| API["Spring Boot REST API"]
+    API --> AUTH["JWT authentication and authorization"]
+    AUTH --> SERVICES["Account and transaction services"]
+    SERVICES --> FRAUD["Rule-based fraud engine"]
+    SERVICES --> DATA["Spring Data JPA / Hibernate"]
+    DATA --> DB[("MySQL")]
+    FLYWAY["Flyway migrations"] --> DB
+```
 
-~~~powershell
-Set-Location C:\Projects\Full-Stack\transaction-fraud-system
-java -version
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\start-backend.ps1 -Dev
-~~~
+### Technology stack
 
-Frontend terminal:
+| Layer | Technologies |
+| --- | --- |
+| Backend | Java 21 compilation target, Spring Boot 3.4.3, Spring Security, Spring Data JPA, Bean Validation |
+| Database | MySQL, Flyway migrations, Hibernate schema validation |
+| Frontend | React, TypeScript, Vite, React Router, Axios |
+| Verification | JUnit 5, Mockito, AssertJ, and a native Node.js API verification script |
+| Local tooling | Maven Wrapper, npm lockfile, and Windows PowerShell startup scripts |
 
-~~~powershell
-Set-Location C:\Projects\Full-Stack\transaction-fraud-system\frontend
+### Transaction consistency and access control
+
+- Money uses Java `BigDecimal` and MySQL `DECIMAL(19,2)`. API responses serialize monetary values as decimal strings; the frontend sums balances using integer cents.
+- Balance updates, transaction records, and fraud analyses execute within a database transaction.
+- Transfers acquire pessimistic account locks in ascending account-ID order to reduce deadlock risk during reciprocal transfers.
+- Customers can access transactions involving their accounts, including incoming transfers. Unrelated transaction and fraud details return `404`.
+- Public registration always creates a `CUSTOMER`. Admin endpoints require server-side `ADMIN` authorization.
+- Flyway manages the schema. Hibernate validates mappings at startup instead of creating or modifying tables.
+
+### Data model
+
+| Entity | Purpose |
+| --- | --- |
+| `users` | Customer/admin identity and password hash |
+| `accounts` | Account ownership, type, currency, status, balance, and version |
+| `transactions` | Money movement or blocked attempt, participating accounts, status, and risk score |
+| `fraud_analyses` | One decision and risk assessment per transaction |
+| `fraud_rule_results` | Individual triggered rules, explanations, and score contributions |
+
+See the [initial schema migration](backend/src/main/resources/db/migration/V1__initial_schema.sql) for foreign keys, indexes, and column definitions.
+
+## Fraud detection
+
+Withdrawals and transfers are evaluated by a deterministic rule engine. Deposits receive a low-risk approval without running the outgoing-transaction rules.
+
+| Rule | Default trigger | Score |
+| --- | --- | --- |
+| High value | Amount is at least 10,000 | +45 |
+| Unusual amount | Amount exceeds 3 times the user's average completed transaction amount | +35 |
+| Rapid activity | User has initiated at least 3 transactions in the previous 5 minutes | +25 |
+| Repeated recipient | At least 3 prior transfers from the same sender account to the same recipient in the previous 5 minutes | +35 |
+| Balance risk | Remaining balance would be less than 10% of the outgoing amount | +20 |
+
+Scores are capped at 100.
+
+| Score | Risk level | Outcome |
+| --- | --- | --- |
+| 0-29 | LOW | Approve |
+| 30-59 | MEDIUM | Approve |
+| 60-79 | HIGH | Approve; available for admin review |
+| 80-100 | CRITICAL | Block; persist the attempt and reasons without changing balances |
+
+The engine evaluates stored transaction activity, including blocked attempts in activity counts. Its thresholds are configurable; it does not use machine learning. Implementation: [FraudDetectionService.java](backend/src/main/java/com/portfolio/fraud/fraud/FraudDetectionService.java).
+
+## Getting started
+
+The documented workflow uses native Windows and PowerShell.
+
+### Prerequisites
+
+- **JDK:** compilation target 21; the verified runtime is Java 25.0.1.
+- **Node.js and npm:** verified with Node 24.20.0 and npm 11.19.0.
+- **MySQL Server 8.4:** running locally on port 3306, with an administrative account available for initial setup.
+- **Git:** to clone the repository.
+
+Maven is supplied through the checked-in wrapper. Docker, WSL, and a global Maven installation are not required.
+
+### 1. Clone the repository
+
+```powershell
+git clone https://github.com/gsathvik228/LedgerGuard.git
+Set-Location LedgerGuard
+```
+
+Run the following setup commands from this repository root.
+
+### 2. Create local configuration and provision the database
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\init-local-env.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-native-mysql.ps1
+```
+
+The first script generates a git-ignored `.env` with random application credentials. It preserves an existing file.
+
+The database setup script prompts for the MySQL root password, creates `fraud_db` and `fraud_app@localhost`, grants access to that database, and verifies the application user's connection. It does not create application tables, delete data, or reset existing passwords. Flyway creates the tables when the backend starts.
+
+If `fraud_app` already exists, configure its current password in `.env` before running setup. For a nondefault client installation, pass `-MySqlExe 'C:\path\to\mysql.exe'` to the setup script. Database provisioning is a one-time step.
+
+### 3. Start the backend
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\start-backend.ps1
+```
+
+The launcher loads the root `.env` and invokes the Maven Wrapper. Successful startup includes Flyway validation, Hibernate initialization, and `Started FraudApplication`.
+
+### 4. Start the frontend
+
+Open a second PowerShell terminal in the repository root:
+
+```powershell
+Set-Location frontend
 npm.cmd ci
 npm.cmd run dev
-~~~
+```
 
-Skip starting another server if the URLs above already respond. Use Ctrl+C in the server terminal to stop it. The current verified session leaves both servers running.
+| Service | Local address |
+| --- | --- |
+| Application | http://127.0.0.1:5173 |
+| Backend API | http://127.0.0.1:8080/api |
+| Swagger UI | http://127.0.0.1:8080/swagger-ui/index.html |
 
-For ordinary customer operation without development admin provisioning, omit `-Dev`. Existing admin records remain valid; that switch controls provisioning, not authorization.
+Open the application and register a customer account. The API base address is not a landing page. Use Ctrl+C in each server terminal to stop it.
 
-## Configuration and private files
+### Development admin account
 
-The root `.env` contains MYSQL_DATABASE, MYSQL_USER, MYSQL_PASSWORD, JWT_SECRET, and JWT_EXPIRATION_MS. Preserve this file. Optional DB_URL overrides the default localhost:3306 database URL; fraud thresholds can also be supplied using the existing FRAUD_* variables.
+To enable admin review locally, run from the repository root:
 
-`start-backend.ps1` resolves files relative to itself, loads `.env`, and optionally loads `.env.development` with `-Dev`. Existing process environment variables take precedence. Variables loaded by the script are removed from its process when it exits. Use literal `NAME=value` entries, optionally surrounded by matching quotes; comments belong on their own lines. The script never executes file contents or prints values.
-
-The wrapper honors JAVA_HOME if set, otherwise uses Java on PATH. It works from the root or backend folder. Direct Maven startup does not load `.env`; use the launcher.
-
-Vite reads root environment files, but only VITE_-prefixed keys are exposed to frontend code. Never put credentials in VITE_ variables. Axios uses relative `/api` URLs. The dev proxy sends them to http://127.0.0.1:8080, with no CORS workarounds. Production hosting would require its own `/api` reverse proxy; nothing has been published.
-
-`.gitignore` excludes `.env`, `.env.*` except the example, `.local/`, logs, Maven target, node_modules, and frontend dist. The project is tracked with Git; private configuration and demo credentials must remain untracked.
-
-## Controlled development admin setup
-
-This is already configured for the current demo. To prepare a fresh local configuration:
-
-~~~powershell
-Set-Location C:\Projects\Full-Stack\transaction-fraud-system
+```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\init-dev-admin.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\start-backend.ps1 -Dev
-~~~
+```
 
-The initialization script generates a random password in git-ignored `.env.development`; it preserves an existing file. The backend initializer requires BOTH the `dev` Spring profile and DEV_ADMIN_ENABLED=true. It reads DEV_ADMIN_EMAIL and DEV_ADMIN_PASSWORD, creates a new ADMIN with a BCrypt hash, never resets an existing password, and refuses to promote a CUSTOMER using the same email. Choose an unused email if there is a conflict.
+Stop an already-running backend before starting it with `-Dev`. The initialization script writes generated credentials to the private `.env.development` file. Open that file locally to obtain the admin email and password.
 
-Public registration has no role field and always creates CUSTOMER users. Admin routes are protected by server authorization, independently of the UI.
+Admin provisioning requires both the `dev` Spring profile and `DEV_ADMIN_ENABLED=true`. It preserves existing credentials and refuses to promote a customer with the same email. Omitting `-Dev` disables provisioning; it does not remove an existing admin account.
 
-## Implemented behavior
+## Configuration
 
-- Register/login with validated inputs, normalized emails, BCrypt, and expiring JWTs.
-- Login persistence across refresh, logout, expired-session handling, protected customer/admin routes, and server-side profile revalidation.
-- Checking/savings accounts, stored account types, zero opening balance in the UI, and balances grouped by currency.
-- Deposits, withdrawals, and transfers with positive two-decimal amounts, ownership and active-account checks, sufficient funds, same-account rejection, and currency matching.
-- BigDecimal money calculations and decimal-string JSON amounts; the browser sums balances using integer cents.
-- Atomic transactions, pessimistic account locks, and ascending account-ID lock order for transfers.
-- Incoming and outgoing transaction visibility for participating customers; unrelated transaction and fraud details return 404.
-- Type/status/risk/date filters, stable server-side pagination, and detailed fraud explanations.
-- Critical outgoing transactions persist as BLOCKED with no balance changes. Fraud rules remain HIGH_VALUE, RAPID_TRANSACTIONS, REPEATED_TRANSFER, BALANCE_RISK, and UNUSUAL_AMOUNT.
-- Admin dashboard with real counts/charts, completed gross volume separated by currency, paginated transaction/fraud monitoring, and detail access.
-- Responsive pages with loading, empty, validation, failure/retry, and blocked/completed states.
+| Variable | Purpose |
+| --- | --- |
+| `MYSQL_DATABASE` | Database name; local setup uses `fraud_db` |
+| `MYSQL_USER` | Application database user; local setup uses `fraud_app` |
+| `MYSQL_PASSWORD` | Required database password |
+| `JWT_SECRET` | Required JWT signing secret; generated by the initialization script |
+| `JWT_EXPIRATION_MS` | Token lifetime; default `3600000` (one hour) |
+| `DB_URL` | Optional JDBC URL override |
+| `FRAUD_HIGH_VALUE` | High-value threshold; default `10000` |
+| `FRAUD_RAPID_WINDOW_MINUTES` | Activity window; default `5` |
+| `FRAUD_RAPID_COUNT` / `FRAUD_REPEAT_COUNT` | Activity-count thresholds; both default to `3` |
+| `FRAUD_HISTORICAL_MULTIPLIER` | Unusual-amount multiplier; default `3` |
 
-Hibernate schema validation remains enabled. The existing V1 Flyway migration was preserved. The currency entity mapping was corrected to match its existing CHAR(3) column; no schema reset was used.
+See [.env.example](.env.example) and [application.yml](backend/src/main/resources/application.yml).
 
-## API contracts
+The startup script resolves configuration relative to the repository, regardless of the terminal's working directory. Existing process environment variables take precedence over file values. Use literal `NAME=value` entries with optional matching quotes and separate comment lines.
 
-All routes below use the `/api` prefix. Protected requests send `Authorization: Bearer <token>`. Account and transaction amounts are decimal strings in responses.
+The wrapper honors `JAVA_HOME` if set; otherwise it uses Java on `PATH`. Direct Maven startup does not load `.env`, so use the launcher for local execution.
 
-| Method | Route | Purpose |
+The frontend sends relative `/api` requests through Vite's proxy to port 8080. Only `VITE_`-prefixed environment variables are exposed to browser code; credentials must never use that prefix. Production hosting would require its own API routing.
+
+## API overview
+
+All routes below use the `/api` prefix. Protected requests require an `Authorization: Bearer <token>` header. Swagger UI provides the full request and response schemas.
+
+| Method | Route | Description |
 | --- | --- | --- |
-| POST | /auth/register | email, password, fullName; creates CUSTOMER |
-| POST | /auth/login | email, password; returns token and profile |
-| GET | /me | Current authenticated profile |
-| GET / POST | /accounts | List own accounts / create account |
-| POST | /transactions/deposit | accountId, amount, optional description |
-| POST | /transactions/withdraw | accountId, amount, optional description |
-| POST | /transactions/transfer | senderAccountId, recipientAccountId, amount, optional description |
-| GET | /transactions | Customer activity, including incoming transfers |
-| GET | /transactions/{id} | Participant or admin transaction details |
-| GET | /transactions/{id}/fraud | Participant or admin fraud analysis |
-| GET | /admin/dashboard | Counts and completedVolumeByCurrency |
-| GET | /admin/transactions | All activity, paginated |
-| GET | /admin/fraud | HIGH/CRITICAL activity, paginated |
-| GET | /admin/transactions/{id} | Admin transaction details |
-| GET | /admin/transactions/{id}/fraud | Admin fraud analysis |
+| POST | `/auth/register` | Register a customer |
+| POST | `/auth/login` | Obtain a JWT and profile |
+| GET | `/me` | Retrieve the authenticated profile |
+| GET / POST | `/accounts` | List own accounts / create an account |
+| POST | `/transactions/deposit` | Deposit into an owned account |
+| POST | `/transactions/withdraw` | Withdraw from an owned account |
+| POST | `/transactions/transfer` | Transfer between same-currency accounts |
+| GET | `/transactions` | List participating transactions |
+| GET | `/transactions/{id}` | View transaction details |
+| GET | `/transactions/{id}/fraud` | View the fraud decision and rules |
+| GET | `/admin/dashboard` | Retrieve counts and volume by currency |
+| GET | `/admin/transactions` | Monitor all transactions |
+| GET | `/admin/fraud` | Monitor HIGH and CRITICAL transactions |
+| GET | `/admin/transactions/{id}` | Review a transaction as an admin |
+| GET | `/admin/transactions/{id}/fraud` | Review its fraud analysis |
 
-Account creation takes accountType (CHECKING or SAVINGS), currency (three uppercase letters), and initialBalance; the frontend submits zero. Transaction lists accept type, status, risk, from, to, page, and size (1–100). Dates are ISO-8601 instants. Pages include content, number, size, totalElements, and totalPages. UI date filters use local time and send UTC instants.
+Transaction lists accept `type`, `status`, `risk`, `from`, `to`, `page`, and `size`. Dates are ISO-8601 instants; page numbers start at zero and page sizes range from 1 to 100.
 
-## Tests and reproducible verification
+## Testing
 
-~~~powershell
-Set-Location C:\Projects\Full-Stack\transaction-fraud-system\backend
-.\mvnw.cmd test
-.\mvnw.cmd clean verify
+From the repository root:
 
-Set-Location ..\frontend
-npm.cmd run build
+```powershell
+# Unit tests and executable JAR
+.\backend\mvnw.cmd clean verify
 
-Set-Location ..
+# TypeScript validation and production assets
+npm.cmd run build --prefix frontend
+
+# Integration checks against the running application
 node .\scripts\verify-api.mjs
-~~~
+```
 
-Start the backend with `-Dev` and the frontend before running the API verifier. It creates two new development customers and records on every run, uses the configured admin, never deletes data, and privately saves generated logins. Timestamped credential files preserve previous runs. It assumes the default fraud thresholds and makes the required three prior transactions within the default five-minute window. It prints only check results, not credentials or tokens.
+The API verifier requires the backend running with `-Dev`, a generated admin configuration, the frontend, and default fraud thresholds. Each run creates two new test customers and development transactions. It preserves existing records and stores generated logins and results under git-ignored `.local/`.
 
-The nine backend tests cover existing fraud rules plus ordered locking, precise transfer balances, critical blocking and analysis persistence, currency rejection, ownership/funds/inactive-account checks, recipient detail access, and stored account type. Mockito uses test-only subclass mocks to avoid its default Java 25 instrumentation incompatibility without upgrading dependencies.
+### Verification coverage
 
-### Verified on 2026-10-10
+The last recorded verification on **2026-10-10** passed:
 
-- Native MySQL connectivity, Flyway migration validation, and Hibernate schema validation passed.
-- Fresh Java 25 `clean verify`: **9 tests, 0 failures/errors**, freshly compiled and packaged.
-- Frontend TypeScript check and production build passed.
-- **15 live API verification groups passed**: registration/role enforcement, duplicate/invalid inputs, login/profile, invalid/expired JWTs, accounts, deposits/withdrawals/transfers and exact balances, incoming visibility, unrelated access denial, rejection cases with unchanged balances, CRITICAL blocking and rules, filters/pagination, customer admin denial, successful admin monitoring, concurrent reciprocal transfers, and authenticated Vite proxy.
-- The reproducible critical transfer scored **90/100**, was stored as BLOCKED, and left both balances unchanged.
-- Post-restart login, proxy access, frontend HTTP delivery, and OpenAPI responses passed.
-- No browser automation tool was available. Actual browser interaction and visual layout remain manual checks, not claimed automated successes.
+- **9 backend tests:** fraud rules, deterministic locking, exact balance changes, critical blocking, currency/ownership/funds/status checks, recipient access, and stored account types.
+- **15 live API verification groups:** authentication and authorization, account operations, incoming-transfer visibility, rejected operations with unchanged balances, fraud persistence, filters/pagination, admin monitoring, reciprocal concurrent transfers, and the Vite proxy.
+- Native MySQL connectivity, Flyway validation, Hibernate schema validation, and the frontend production build.
 
-## Short demo walkthrough and manual UI checklist
+Browser interaction and visual layout are not covered by automated tests. Manual review should include refresh persistence, logout and expiry behavior, form validation, filters/pagination, admin navigation, and narrow-screen layouts.
 
-1. Open http://127.0.0.1:5173 and sign in as Alice using the private demo credential file. Refresh: the session should persist. Check the overview balances and accounts.
-2. Open Move money. Deposit a small amount, withdraw, and transfer to Bob's USD account ID from `.local/verification-latest.json`. Confirm the refreshed balances and completed transaction details. Try the EUR recipient and verify the rejection message.
-3. In history, filter for BLOCKED / CRITICAL and open the recorded blocked transaction. Review its score, unchanged-balance message, decision, and triggered rules. Clear filters and exercise pagination.
-4. Sign out and sign in as Bob (or use a private browser window). Confirm the incoming transfer and its fraud details appear. Customer navigation should not show admin options.
-5. Sign in as the development admin. Open monitoring overview, all transactions, and fraud review; filter and open a transaction. Check metric/chart values against the table.
-6. Register a new customer through the UI, open a savings account, and confirm it starts at zero. Check validation errors and the no-activity empty state.
-7. Check narrow/mobile layout, keyboard navigation, logout protection, and expiry after the configured token lifetime. API expiry denial is automated; the browser's expired-session presentation still needs this manual check.
+## Demo walkthrough
 
-For a fresh critical demo using default thresholds, use a new customer: deposit USD 30,000, withdraw USD 50, transfer USD 100.25 to a second USD account, then attempt USD 29,000 to that recipient within five minutes. High value (45) + rapid activity (25) + low remaining balance (20) yields 90 points and blocks the transfer. Use the existing blocked demo record when merely presenting the app.
+1. Register two customers and create a USD account for each.
+2. Sign in as the first customer. Deposit USD 30,000, withdraw USD 50, and transfer USD 100.25 to the second account using its account ID.
+3. Within five minutes, attempt another transfer of USD 29,000. With default thresholds, high value (+45), rapid activity (+25), and balance risk (+20) produce a **90/100 CRITICAL** score. The attempt is recorded as **BLOCKED**, and neither balance changes.
+4. Open its transaction details to inspect the decision and triggered rules.
+5. Sign in as the recipient to review the incoming transfer, then as the development admin to inspect ledger metrics and fraud monitoring.
+
+Use fresh accounts for the reproducible score above. Additional activity or customized thresholds can change the result.
+
+## Repository structure
+
+```text
+backend/
+  src/main/java/com/portfolio/fraud/
+    controller/       REST endpoints
+    dto/              Validated request and response contracts
+    entity/           JPA data model
+    repository/       Database queries and account locks
+    service/          Account, authentication, and transaction workflows
+    fraud/            Fraud rules and risk scoring
+    security/         JWT authorization and development admin setup
+  src/main/resources/
+    db/migration/     Flyway schema migrations
+    application.yml   Backend configuration
+  src/test/           Backend tests
+frontend/
+  src/                Pages, API client, authentication, and UI utilities
+  src.tsx             Application entry point and routing
+  style.css           Responsive styling
+scripts/              Environment, database, admin, and API verification tools
+start-backend.ps1      Windows backend launcher
+```
+
+## Scope and limitations
+
+LedgerGuard is intended for local development and portfolio review. Deposits and opening balances are simulated; no external funds are verified. Transfers require matching currencies, and the fraud engine does not normalize historical amounts across currencies. Admin volume metrics represent gross transaction activity, not account balances.
+
+Production use would require additional work, including payment integration, deployment hardening, session-storage review, rate limiting, operational monitoring, and broader integration testing. Local secrets, generated demo credentials, logs, dependencies, and build outputs are excluded from Git.
