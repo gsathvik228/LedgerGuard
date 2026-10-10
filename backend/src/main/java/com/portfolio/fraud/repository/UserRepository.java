@@ -1,0 +1,1 @@
+package com.portfolio.fraud.repository; import com.portfolio.fraud.entity.User; import java.util.*; import org.springframework.data.jpa.repository.JpaRepository; public interface UserRepository extends JpaRepository<User,Long>{Optional<User> findByEmail(String email); boolean existsByEmail(String email);}

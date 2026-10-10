@@ -1,0 +1,20 @@
+{
+    "scripts":  {
+                    "dev":  "vite",
+                    "build":  "tsc --noEmit \u0026\u0026 vite build"
+                },
+    "dependencies":  {
+                         "@vitejs/plugin-react":  "latest",
+                         "vite":  "latest",
+                         "react":  "latest",
+                         "react-dom":  "latest",
+                         "typescript":  "~5.7.2",
+                         "axios":  "latest",
+                         "react-router-dom":  "latest"
+                     },
+    "devDependencies":  {
+                            "@types/react":  "^19.0.0",
+                            "@types/react-dom":  "^19.0.0"
+                        },
+    "type":  "module"
+}

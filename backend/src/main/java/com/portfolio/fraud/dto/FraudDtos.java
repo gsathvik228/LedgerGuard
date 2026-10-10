@@ -1,0 +1,1 @@
+package com.portfolio.fraud.dto; import java.time.Instant; import java.util.List; public final class FraudDtos {private FraudDtos(){} public record RuleResponse(String ruleName,String severity,String reason,int scoreContribution){} public record AnalysisResponse(int riskScore,String riskLevel,String decision,Instant createdAt,List<RuleResponse> rules){} }

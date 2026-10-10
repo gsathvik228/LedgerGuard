@@ -1,0 +1,1 @@
+package com.portfolio.fraud.exception; import org.springframework.http.HttpStatus; public class ApiException extends RuntimeException { public final HttpStatus status; public final String code; public ApiException(HttpStatus s,String c,String m){super(m);status=s;code=c;} }

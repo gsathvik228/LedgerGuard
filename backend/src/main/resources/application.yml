@@ -1,0 +1,24 @@
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/${MYSQL_DATABASE:fraud_db}?serverTimezone=UTC}
+    username: ${MYSQL_USER:fraud_app}
+    password: ${MYSQL_PASSWORD}
+  jpa:
+    hibernate.ddl-auto: validate
+    open-in-view: false
+  flyway: { enabled: true }
+server: { error: { include-message: never } }
+logging:
+  level:
+    org.springframework.web: INFO
+app:
+  jwt: { secret: '${JWT_SECRET}', expiration-ms: '${JWT_EXPIRATION_MS:3600000}' }
+  fraud:
+    high-value: ${FRAUD_HIGH_VALUE:10000}
+    rapid-window-minutes: ${FRAUD_RAPID_WINDOW_MINUTES:5}
+    rapid-count: ${FRAUD_RAPID_COUNT:3}
+    repeat-count: ${FRAUD_REPEAT_COUNT:3}
+    historical-multiplier: ${FRAUD_HISTORICAL_MULTIPLIER:3}
+
+  dev-admin:
+    enabled: ${DEV_ADMIN_ENABLED:false}
