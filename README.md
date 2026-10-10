@@ -84,6 +84,8 @@ Scores are capped at 100.
 | 60-79 | HIGH | Approve; available for admin review |
 | 80-100 | CRITICAL | Block; persist the attempt and reasons without changing balances |
 
+Completed transactions with MEDIUM, HIGH, or CRITICAL risk display **Suspicious activity detected**. Blocked transactions display **Blocked**. Submission results, history, and details explain whether money moved and balances changed, and show the reasons stored with the fraud analysis. Risk level and score provide supporting context. A flag indicates unusual activity, not proof of fraud; it does not initiate a human review workflow.
+
 The engine evaluates stored transaction activity, including blocked attempts in activity counts. Its thresholds are configurable; it does not use machine learning. Implementation: [FraudDetectionService.java](backend/src/main/java/com/portfolio/fraud/fraud/FraudDetectionService.java).
 
 ## Getting started
@@ -220,7 +222,12 @@ npm.cmd run build --prefix frontend
 
 # Integration checks against the running application
 node .\scripts\verify-api.mjs
+
+# Suspicious outcome communication and persisted rule checks
+node .\scripts\verify-outcomes.mjs
 ```
+
+The outcome verifier creates a new development customer and checks MEDIUM/HIGH completed transfers and a CRITICAL blocked transfer against the real API. It verifies balance effects and history persistence, then renders the shared warning component with those stored analyses to check messages, reasons, and loading/error states. It uses existing frontend dependencies and default fraud thresholds. These component checks do not replace browser interaction testing.
 
 The API verifier requires the backend running with `-Dev`, a generated admin configuration, the frontend, and default fraud thresholds. Each run creates two new test customers and development transactions. It preserves existing records and stores generated logins and results under git-ignored `.local/`.
 

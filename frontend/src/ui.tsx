@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, errorMessage } from './api';
-import type { Transaction } from './types';
+import type { Analysis, Transaction } from './types';
+import { isSuspicious, OutcomeNotice } from './outcome';
 
 export function useResource<T>(url: string, revision=0) {
   const [data,setData] = useState<T>();
@@ -31,11 +32,15 @@ export function ErrorBox({message,retry}:{message:string;retry?:()=>void}) {
 }
 export function Loading() { return <p className="loading" role="status">Loading your ledger…</p>; }
 export function Empty({children}:{children:React.ReactNode}) { return <div className="empty">{children}</div>; }
+export function PersistedOutcome({transaction,admin=false,compact=false}:{transaction:Transaction;admin?:boolean;compact?:boolean}) {
+  const analysis=useResource<Analysis>((admin?'/admin':'')+'/transactions/'+transaction.id+'/fraud');
+  return <OutcomeNotice transaction={transaction} analysis={analysis.data} loading={analysis.loading} error={analysis.error} retry={analysis.retry} compact={compact}/>;
+}
 export function TransactionTable({rows,admin=false}:{rows:Transaction[];admin?:boolean}) {
   if (!rows.length) return <Empty>No transactions match this view.</Empty>;
   return <div className="table-wrap"><table><thead><tr><th>Transaction</th><th>Accounts</th><th>Amount</th><th>Status</th><th>Risk</th><th>Recorded</th></tr></thead><tbody>{rows.map(t=><tr key={t.id}>
     <td><Link to={(admin?'/admin':'')+'/transactions/'+t.id}>#{t.id} · {title(t.type)}</Link><small>{t.description||'No description'}</small></td>
     <td>{t.senderAccountId ? '#'+t.senderAccountId : 'External'} → {t.recipientAccountId ? '#'+t.recipientAccountId : 'External'}</td>
-    <td className="numeric">{money(t.amount,t.currency)}</td><td><Badge value={t.status}/></td><td><Badge value={t.riskLevel}/><small>{t.riskScore}/100</small></td><td>{timestamp(t.createdAt)}</td>
+    <td className="numeric">{money(t.amount,t.currency)}</td><td className="outcome-cell">{isSuspicious(t)||t.status==='BLOCKED'?<PersistedOutcome key={t.id} transaction={t} admin={admin} compact/>:<Badge value={t.status}/>}</td><td><Badge value={t.riskLevel}/><small>{t.riskScore}/100</small></td><td>{timestamp(t.createdAt)}</td>
   </tr>)}</tbody></table></div>;
 }

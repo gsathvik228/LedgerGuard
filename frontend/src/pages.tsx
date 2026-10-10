@@ -1,9 +1,10 @@
 import { useState, type FormEvent } from 'react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 import { api, errorMessage } from './api';
+import { OutcomeNotice } from './outcome';
 import { useAuth } from './auth';
 import type { Account, Analysis, Dashboard, Page, Session, Transaction } from './types';
-import { Badge, Empty, ErrorBox, Loading, money, timestamp, title, TransactionTable, useResource } from './ui';
+import { Badge, Empty, ErrorBox, Loading, money, timestamp, title, TransactionTable, PersistedOutcome, useResource } from './ui';
 
 function Heading({eyebrow,title:heading,children}:{eyebrow:string;title:string;children?:React.ReactNode}) {
   return <div className="page-heading"><div><p className="eyebrow">{eyebrow}</p><h1>{heading}</h1></div>{children}</div>;
@@ -105,7 +106,7 @@ export function MoneyPage() {
       <label>Amount<input name="amount" type="text" inputMode="decimal" pattern="[0-9]{1,17}(\.[0-9]{1,2})?" required placeholder="0.00"/></label>
       <label>Description <span className="muted">(optional)</span><input name="description" maxLength={255} placeholder="What is this transaction for?"/></label>
       <button disabled={busy}>{busy?'Processing…':title(operation)+' funds'}</button></form>}
-    {result&&<div role="status" className={result.status==='BLOCKED'?'blocked-result':'success'}><h3>{result.status==='BLOCKED'?'Blocked for your protection':'Transaction completed'}</h3><p>{result.status==='BLOCKED'?'No funds moved. Review the rules that triggered this decision.':money(result.amount,result.currency)+' recorded. Your balances have been refreshed.'}</p><Link to={'/transactions/'+result.id}>View transaction & fraud analysis →</Link></div>}
+    {result&&<div role="status" aria-live="polite"><PersistedOutcome key={result.id} transaction={result}/><Link to={'/transactions/'+result.id}>View transaction & fraud analysis</Link></div>}
     </section><section><div className="panel guidance"><p className="eyebrow">BUILT-IN CHECKS</p><h2>A decision you can understand.</h2><p>Outgoing transactions are checked for high amounts, rapid activity, unusual spending, repeated recipients, and low remaining balances.</p><p>Critical risk blocks the transaction before funds move. The attempted transaction and its reasons remain in your history.</p></div><h2>Current balances</h2>{accounts.data&&<AccountCards accounts={accounts.data}/>}</section></div></>;
 }
 export function HistoryPage({admin=false,suspicious=false}:{admin?:boolean;suspicious?:boolean}) {
@@ -138,7 +139,7 @@ export function DetailPage({admin=false}:{admin?:boolean}) {
   const t=transaction.data;
   return <><Heading eyebrow="TRANSACTION EXPLORER" title={'Transaction #'+id}><Link className="button secondary" to={prefix+'/transactions'}>Back to history</Link></Heading>
     {transaction.loading?<Loading/>:transaction.error?<ErrorBox message={transaction.error} retry={transaction.retry}/>:t&&<section className="panel"><div className="split"><div><p className="eyebrow">{title(t.type)}</p><h2 className="amount">{money(t.amount,t.currency)}</h2></div><Badge value={t.status}/></div>
-      {t.status==='BLOCKED'&&<p className="blocked-result">This transaction was blocked. No balances changed.</p>}
+      <OutcomeNotice transaction={t} analysis={analysis.data} loading={analysis.loading} error={analysis.error} retry={analysis.retry}/>
       <dl className="detail-grid"><div><dt>From</dt><dd>{t.senderAccountId?'Account #'+t.senderAccountId:'External deposit'}</dd></div><div><dt>To</dt><dd>{t.recipientAccountId?'Account #'+t.recipientAccountId:'External withdrawal'}</dd></div><div><dt>Recorded</dt><dd>{timestamp(t.createdAt)}</dd></div><div><dt>Description</dt><dd>{t.description||'No description'}</dd></div></dl></section>}
     <section className="panel"><h2>Fraud analysis</h2>{analysis.loading?<Loading/>:analysis.error?<ErrorBox message={analysis.error} retry={analysis.retry}/>:analysis.data&&<><div className="risk-summary"><div className="risk-score">{analysis.data.riskScore}<small>/100</small></div><div><Badge value={analysis.data.riskLevel}/><h3>{analysis.data.decision==='BLOCK'?'Decision: Block':'Decision: Approve'}</h3><p className="muted">{timestamp(analysis.data.createdAt)}</p></div></div><div className="score-track"><div style={{width:analysis.data.riskScore+'%'}}/></div>
       <h3>Triggered rules</h3>{!analysis.data.rules.length?<Empty>No fraud rules were triggered.</Empty>:<div className="rule-list">{analysis.data.rules.map(rule=><article key={rule.ruleName}><div className="split"><strong>{title(rule.ruleName)}</strong><span>+{rule.scoreContribution} points</span></div><p>{rule.reason}</p><Badge value={rule.severity}/></article>)}</div>}<p className="muted">Scores: Low 0–29 · Medium 30–59 · High 60–79 · Critical 80–100. Critical outgoing transactions are blocked.</p></>}</section></>;
