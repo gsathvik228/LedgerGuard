@@ -22,6 +22,9 @@ public class TransactionService {
     private final FraudAnalysisRepository analyses;
     private final FraudDetectionService fraud;
 
+    @org.springframework.beans.factory.annotation.Value("${app.confirmation.ttl-seconds:300}")
+    private long confirmationSeconds=300;
+
     public TransactionService(AccountRepository a, TransactionRepository t, FraudAnalysisRepository fa, FraudDetectionService f) {
         accounts=a; transactions=t; analyses=fa; fraud=f;
     }
@@ -46,7 +49,7 @@ public class TransactionService {
         if (tx.getStatus()==TransactionStatus.COMPLETED) {
             sender.debit(request.amount()); recipient.credit(request.amount());
         }
-        return map(tx);
+        return response(tx,user);
     }
 
     @Transactional
@@ -56,7 +59,7 @@ public class TransactionService {
         var risk=fraud.evaluate(user,account,null,request.amount());
         Transaction tx=save(account,null,user,TransactionType.WITHDRAWAL,request.amount(),risk,request.description());
         if (tx.getStatus()==TransactionStatus.COMPLETED) account.debit(request.amount());
-        return map(tx);
+        return response(tx,user);
     }
 
     @Transactional
@@ -66,14 +69,16 @@ public class TransactionService {
         var risk=new FraudDetectionService.Result(0,RiskLevel.LOW,List.of());
         Transaction tx=save(null,account,user,TransactionType.DEPOSIT,request.amount(),risk,request.description());
         account.credit(request.amount());
-        return map(tx);
+        return response(tx,user);
     }
 
     private Transaction save(Account sender,Account recipient,User user,TransactionType type,BigDecimal amount,
                              FraudDetectionService.Result risk,String description) {
-        TransactionStatus status=risk.level()==RiskLevel.CRITICAL?TransactionStatus.BLOCKED:TransactionStatus.COMPLETED;
+        TransactionStatus status=risk.level()==RiskLevel.CRITICAL?TransactionStatus.BLOCKED:
+            risk.level()==RiskLevel.LOW?TransactionStatus.COMPLETED:TransactionStatus.PENDING_CONFIRMATION;
         Transaction tx=transactions.save(new Transaction(sender,recipient,user,type,amount,status,risk.level(),risk.score(),description));
-        FraudAnalysis analysis=new FraudAnalysis(tx,risk.score(),risk.level(),status==TransactionStatus.BLOCKED?"BLOCK":"APPROVE");
+        if (status==TransactionStatus.PENDING_CONFIRMATION) tx.awaitConfirmation(Instant.now().plusSeconds(Math.max(1,confirmationSeconds)));
+        FraudAnalysis analysis=new FraudAnalysis(tx,risk.score(),risk.level(),status==TransactionStatus.BLOCKED?"BLOCK":status==TransactionStatus.PENDING_CONFIRMATION?"CONFIRM":"APPROVE");
         risk.findings().forEach(f->analysis.add(new FraudRuleResult(f.rule(),f.reason(),f.severity(),f.points())));
         analyses.save(analysis);
         return tx;
@@ -86,20 +91,20 @@ public class TransactionService {
 
     public Page<TransactionResponse> history(User user,TransactionType type,TransactionStatus status,RiskLevel risk,
                                              Instant from,Instant to,int page,int size) {
-        return search(user.getId(),type,status,risk,from,to,page,size,false);
+        return search(user.getId(),type,status,risk,from,to,page,size,false,user);
     }
 
     public Page<TransactionResponse> monitoring(TransactionType type,TransactionStatus status,RiskLevel risk,
                                                 Instant from,Instant to,int page,int size,boolean suspicious) {
-        return search(null,type,status,risk,from,to,page,size,suspicious);
+        return search(null,type,status,risk,from,to,page,size,suspicious,null);
     }
 
     private Page<TransactionResponse> search(Long userId,TransactionType type,TransactionStatus status,RiskLevel risk,
-                                             Instant from,Instant to,int page,int size,boolean suspicious) {
+                                             Instant from,Instant to,int page,int size,boolean suspicious,User viewer) {
         if (from!=null && to!=null && from.isAfter(to)) throw bad("INVALID_DATE_RANGE","Start must be before end");
         if (page<0 || size<1 || size>100) throw bad("INVALID_PAGE","Page must be nonnegative and size between 1 and 100");
         return transactions.search(userId,type,status,risk,from,to,suspicious,
-            PageRequest.of(page,size,Sort.by(Sort.Direction.DESC,"createdAt","id"))).map(this::map);
+            PageRequest.of(page,size,Sort.by(Sort.Direction.DESC,"createdAt","id"))).map(tx->response(tx,viewer));
     }
 
     private Transaction visible(User user,Long id) {
@@ -111,13 +116,15 @@ public class TransactionService {
         return tx;
     }
 
-    public TransactionResponse detail(User user,Long id) { return map(visible(user,id)); }
+    public TransactionResponse detail(User user,Long id) { return response(visible(user,id),user); }
 
     public AnalysisResponse fraudDetail(User user,Long id) {
         visible(user,id);
         FraudAnalysis analysis=analyses.findByTransactionId(id).orElseThrow(this::notFound);
+        var confirmation=analyses.findByTransactionIdAndPhase(id,"CONFIRMATION").map(a->new AssessmentResponse(a.getRiskScore(),a.getRiskLevel().name(),a.getAction(),a.getCreatedAt(),
+            a.getRuleResults().stream().map(r->new RuleResponse(r.getRuleName(),r.getSeverity().name(),r.getReason(),r.getScoreContribution())).toList())).orElse(null);
         return new AnalysisResponse(analysis.getRiskScore(),analysis.getRiskLevel().name(),analysis.getAction(),analysis.getCreatedAt(),
-            analysis.getRuleResults().stream().map(r->new RuleResponse(r.getRuleName(),r.getSeverity().name(),r.getReason(),r.getScoreContribution())).toList());
+            analysis.getRuleResults().stream().map(r->new RuleResponse(r.getRuleName(),r.getSeverity().name(),r.getReason(),r.getScoreContribution())).toList(),confirmation);
     }
 
     private Account locked(Long id) {
@@ -136,11 +143,12 @@ public class TransactionService {
     }
     private ApiException notFound() { return new ApiException(HttpStatus.NOT_FOUND,"TRANSACTION_NOT_FOUND","Transaction not found"); }
     private ApiException bad(String code,String message) { return new ApiException(HttpStatus.BAD_REQUEST,code,message); }
-    private TransactionResponse map(Transaction tx) {
+    public TransactionResponse response(Transaction tx,User viewer) {
         Account account=tx.getSenderAccount()!=null?tx.getSenderAccount():tx.getRecipientAccount();
         return new TransactionResponse(tx.getId(),tx.getType().name(),tx.getAmount(),tx.getStatus().name(),
             tx.getRiskLevel().name(),tx.getRiskScore(),tx.getDescription(),tx.getCreatedAt(),
             tx.getSenderAccount()==null?null:tx.getSenderAccount().getId(),
-            tx.getRecipientAccount()==null?null:tx.getRecipientAccount().getId(),account.getCurrency());
+            tx.getRecipientAccount()==null?null:tx.getRecipientAccount().getId(),account.getCurrency(),tx.getConfirmationExpiresAt(),tx.getResolvedAt(),tx.getOutcomeReason(),
+            viewer!=null && viewer.getId().equals(tx.getInitiatedBy().getId()) && tx.getStatus()==TransactionStatus.PENDING_CONFIRMATION && !tx.expired(Instant.now()));
     }
 }

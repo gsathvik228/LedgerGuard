@@ -24,6 +24,18 @@ public interface TransactionRepository extends JpaRepository<Transaction,Long> {
         @Param("status") TransactionStatus status, @Param("risk") RiskLevel risk,
         @Param("from") Instant from, @Param("to") Instant to,
         @Param("suspicious") boolean suspicious, Pageable page);
+    @Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select t from Transaction t where t.id=:id")
+    Optional<Transaction> findByIdForUpdate(@Param("id") Long id);
+    @Modifying
+    @Query("update Transaction t set t.status=com.portfolio.fraud.entity.TransactionStatus.EXPIRED, t.resolvedAt=:now, t.outcomeReason='Confirmation period expired. No funds moved.' where t.status=com.portfolio.fraud.entity.TransactionStatus.PENDING_CONFIRMATION and t.confirmationExpiresAt<=:now")
+    int expirePending(@Param("now") Instant now);
+    @Query("select count(t) from Transaction t where t.initiatedBy.id=:id and t.createdAt>:after and t.id<>:exclude")
+    long countActivityExcluding(@Param("id") Long id,@Param("after") Instant after,@Param("exclude") Long exclude);
+    @Query("select count(t) from Transaction t where t.senderAccount.id=:sender and t.recipientAccount.id=:recipient and t.createdAt>:after and t.id<>:exclude")
+    long countRecipientExcluding(@Param("sender") Long sender,@Param("recipient") Long recipient,@Param("after") Instant after,@Param("exclude") Long exclude);
+    @Query("select avg(t.amount) from Transaction t where t.initiatedBy.id=:id and t.status=com.portfolio.fraud.entity.TransactionStatus.COMPLETED and t.id<>:exclude")
+    BigDecimal averageExcluding(@Param("id") Long id,@Param("exclude") Long exclude);
     long countByInitiatedByIdAndCreatedAtAfter(Long id, Instant after);
     long countBySenderAccountIdAndRecipientAccountIdAndCreatedAtAfter(Long sender, Long recipient, Instant after);
     long countByStatus(TransactionStatus status);

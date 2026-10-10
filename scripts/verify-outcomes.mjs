@@ -38,7 +38,10 @@ async function run() {
   const recipient=await request('/accounts',token,{accountType:'SAVINGS',currency:'USD',initialBalance:'0.00'});
   const balances=async()=> (await request('/accounts',token)).map(a=>({id:a.id,balance:a.balance})).sort((a,b)=>a.id-b.id);
   await request('/transactions/deposit',token,{accountId:sender.id,amount:'30000.00'});
-  const flagged=await request('/transactions/transfer',token,{senderAccountId:sender.id,recipientAccountId:recipient.id,amount:'10000.00',description:'Completed suspicious outcome verification'});
+  let flagged=await request('/transactions/transfer',token,{senderAccountId:sender.id,recipientAccountId:recipient.id,amount:'10000.00',description:'Completed suspicious outcome verification'});
+  assert.equal(flagged.status,'PENDING_CONFIRMATION');
+  assert.deepEqual(await balances(),[{id:sender.id,balance:'30000.00'},{id:recipient.id,balance:'0.00'}]);
+  flagged=await request('/transactions/'+flagged.id+'/confirm',token,{password:credentials.password});
   assert.equal(flagged.status,'COMPLETED');
   assert.equal(flagged.riskLevel,'MEDIUM');
   assert.deepEqual(await balances(),[{id:sender.id,balance:'20000.00'},{id:recipient.id,balance:'10000.00'}]);
@@ -47,7 +50,9 @@ async function run() {
   const blocked=await request('/transactions/transfer',token,{senderAccountId:sender.id,recipientAccountId:recipient.id,amount:'19500.00',description:'Blocked outcome verification'});
   assert.equal(blocked.status,'BLOCKED');assert.equal(blocked.riskLevel,'CRITICAL');
   assert.deepEqual(await balances(),before);
-  const high=await request('/transactions/transfer',token,{senderAccountId:sender.id,recipientAccountId:recipient.id,amount:'10000.00',description:'High-risk completed outcome verification'});
+  let high=await request('/transactions/transfer',token,{senderAccountId:sender.id,recipientAccountId:recipient.id,amount:'10000.00',description:'High-risk completed outcome verification'});
+  assert.equal(high.status,'PENDING_CONFIRMATION');
+  high=await request('/transactions/'+high.id+'/confirm',token,{password:credentials.password});
   assert.equal(high.status,'COMPLETED');assert.equal(high.riskLevel,'HIGH');
   assert.deepEqual(await balances(),[{id:sender.id,balance:'9999.00'},{id:recipient.id,balance:'20000.00'}]);
 
@@ -56,7 +61,7 @@ async function run() {
     const analysis=await request('/transactions/'+transaction.id+'/fraud',token);
     assert.equal(detail.status,transaction.status);
     assert.ok(analysis.rules.length>0);
-    assert.equal(analysis.decision,transaction.status==='BLOCKED'?'BLOCK':'APPROVE');
+    assert.equal(analysis.confirmation?.decision || analysis.decision,transaction.status==='BLOCKED'?'BLOCK':'APPROVE');
     for(const compact of [false,true]) {
       const html=renderToStaticMarkup(React.createElement(OutcomeNotice,{transaction:detail,analysis,compact}));
       assert.ok(html.includes(transaction.status==='BLOCKED'?'Blocked':'Suspicious activity detected'));

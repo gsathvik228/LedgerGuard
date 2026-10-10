@@ -41,6 +41,6 @@ export function TransactionTable({rows,admin=false}:{rows:Transaction[];admin?:b
   return <div className="table-wrap"><table><thead><tr><th>Transaction</th><th>Accounts</th><th>Amount</th><th>Status</th><th>Risk</th><th>Recorded</th></tr></thead><tbody>{rows.map(t=><tr key={t.id}>
     <td><Link to={(admin?'/admin':'')+'/transactions/'+t.id}>#{t.id} · {title(t.type)}</Link><small>{t.description||'No description'}</small></td>
     <td>{t.senderAccountId ? '#'+t.senderAccountId : 'External'} → {t.recipientAccountId ? '#'+t.recipientAccountId : 'External'}</td>
-    <td className="numeric">{money(t.amount,t.currency)}</td><td className="outcome-cell">{isSuspicious(t)||t.status==='BLOCKED'?<PersistedOutcome key={t.id} transaction={t} admin={admin} compact/>:<Badge value={t.status}/>}</td><td><Badge value={t.riskLevel}/><small>{t.riskScore}/100</small></td><td>{timestamp(t.createdAt)}</td>
+    <td className="numeric">{money(t.amount,t.currency)}</td><td className="outcome-cell">{isSuspicious(t)||t.status==='BLOCKED'?<><PersistedOutcome key={t.id+t.status} transaction={t} admin={admin} compact/>{t.status==='PENDING_CONFIRMATION'&&<Link to={(admin?'/admin':'')+'/transactions/'+t.id}>{t.canConfirm?'Authorize or cancel payment':'View pending payment'}</Link>}</>:<Badge value={t.status}/>}</td><td><Badge value={t.riskLevel}/><small>{t.riskScore}/100</small></td><td>{timestamp(t.createdAt)}</td>
   </tr>)}</tbody></table></div>;
 }

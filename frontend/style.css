@@ -15,3 +15,4 @@
 .outcome-risk,.outcome-disclaimer,.outcome-loading{font-size:.78rem;line-height:1.5;margin:10px 0 0}.outcome-risk{font-weight:600}.outcome-disclaimer{font-weight:400}
 .outcome-error{font-size:.82rem;margin:10px 0}.outcome-error button{display:block;margin-top:8px;font-size:.78rem;padding:6px 10px}
 .outcome-cell{min-width:300px;max-width:400px;white-space:normal}.outcome-compact{margin:0;padding:13px;font-size:.8rem}.outcome-compact .outcome-badge{font-size:.8rem}
+.confirmation-panel{background:#f8fafc;border:1px solid #d6e0e8;border-radius:8px;padding:20px;margin:18px 0;white-space:normal}.confirmation-panel p{font-size:.9rem}.confirmation-panel input{max-width:420px}.confirmation-buttons{display:flex;gap:12px;flex-wrap:wrap}.outcome-neutral{background:#f2f4f7;border-color:#c9d3df;color:#405366}.badge.pending_confirmation{background:#fff4d9;color:#88651b}.badge.cancelled,.badge.expired{background:#edf1f5;color:#52677c}

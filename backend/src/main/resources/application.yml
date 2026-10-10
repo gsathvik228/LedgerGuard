@@ -22,3 +22,9 @@ app:
 
   dev-admin:
     enabled: ${DEV_ADMIN_ENABLED:false}
+
+  confirmation:
+    ttl-seconds: ${CONFIRMATION_TTL_SECONDS:300}
+    max-failures: ${CONFIRMATION_MAX_FAILURES:5}
+    attempt-window-seconds: ${CONFIRMATION_ATTEMPT_WINDOW_SECONDS:300}
+    lock-seconds: ${CONFIRMATION_LOCK_SECONDS:60}

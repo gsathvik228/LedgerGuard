@@ -4,7 +4,7 @@
 
 LedgerGuard is a full-stack portfolio application for managing accounts, transferring funds, and reviewing suspicious activity. Customers can track their balances and transaction history, while administrators can monitor activity across the ledger and inspect the reasons behind each fraud decision.
 
-The project demonstrates transactional consistency, role-based authorization, concurrent account updates, and a React interface backed by real APIs. It is a development banking simulation; deposits and withdrawals do not connect to external payment networks.
+The project demonstrates password-confirmed authorization, transactional consistency, role-based authorization, concurrent account updates, and a React interface backed by real APIs. It is a development banking simulation; deposits and withdrawals do not connect to external payment networks.
 
 ## Features
 
@@ -58,8 +58,9 @@ flowchart LR
 | `users` | Customer/admin identity and password hash |
 | `accounts` | Account ownership, type, currency, status, balance, and version |
 | `transactions` | Money movement or blocked attempt, participating accounts, status, and risk score |
-| `fraud_analyses` | One decision and risk assessment per transaction |
+| `fraud_analyses` | Immutable original assessment and a separate confirmation-time assessment |
 | `fraud_rule_results` | Individual triggered rules, explanations, and score contributions |
+| `confirmation_guards` | Per-user failed-password counters and temporary confirmation lockouts |
 
 See the [initial schema migration](backend/src/main/resources/db/migration/V1__initial_schema.sql) for foreign keys, indexes, and column definitions.
 
@@ -80,11 +81,11 @@ Scores are capped at 100.
 | Score | Risk level | Outcome |
 | --- | --- | --- |
 | 0-29 | LOW | Approve |
-| 30-59 | MEDIUM | Approve |
-| 60-79 | HIGH | Approve; available for admin review |
+| 30-59 | MEDIUM | Await initiating user password confirmation; no funds move |
+| 60-79 | HIGH | Await initiating user password confirmation; no funds move |
 | 80-100 | CRITICAL | Block; persist the attempt and reasons without changing balances |
 
-Completed transactions with MEDIUM, HIGH, or CRITICAL risk display **Suspicious activity detected**. Blocked transactions display **Blocked**. Submission results, history, and details explain whether money moved and balances changed, and show the reasons stored with the fraud analysis. Risk level and score provide supporting context. A flag indicates unusual activity, not proof of fraud; it does not initiate a human review workflow.
+New MEDIUM/HIGH outgoing transactions display **Pending confirmation** and **Suspicious activity detected**. Completed suspicious transactions retain their warning. Blocked transactions display **Blocked**. Submission results, history, and details explain whether money moved and balances changed, and show the reasons stored with the fraud analysis. Risk level and score provide supporting context. A flag indicates unusual activity, not proof of fraud; it does not initiate a human review workflow.
 
 The engine evaluates stored transaction activity, including blocked attempts in activity counts. Its thresholds are configurable; it does not use machine learning. Implementation: [FraudDetectionService.java](backend/src/main/java/com/portfolio/fraud/fraud/FraudDetectionService.java).
 
@@ -162,6 +163,21 @@ Stop an already-running backend before starting it with `-Dev`. The initializati
 
 Admin provisioning requires both the `dev` Spring profile and `DEV_ADMIN_ENABLED=true`. It preserves existing credentials and refuses to promote a customer with the same email. Omitting `-Dev` disables provisioning; it does not remove an existing admin account.
 
+## Password-confirmed suspicious payments
+
+LOW-risk outgoing transactions execute normally. MEDIUM/HIGH transactions are persisted as `PENDING_CONFIRMATION` with their original fraud reasons; no funds are moved or reserved. Only the initiating user can authorize with their current password or cancel, including when the recipient or another administrator can view the transaction.
+
+- The default confirmation window is **5 minutes**. An expiry job runs every five seconds; authorization also checks the deadline before and after waiting for locks.
+- Confirmation verifies the existing BCrypt password hash. Passwords are never recorded in the database, application logs, React state, or browser storage; the input is cleared when submitted.
+- **5 failed attempts within 5 minutes** cause a **60-second per-user lockout**, shared across pending transactions and persisted in MySQL. Incorrect passwords return HTTP 400; an active lockout returns HTTP 429. Cancellation remains available during lockout.
+- Confirmation locks the transaction first and account rows in ascending ID order. It rechecks ownership, account status, currencies, funds, and current fraud activity, excluding the pending transaction itself. The confirmation transaction uses READ_COMMITTED isolation to reassess committed activity after waiting for locks.
+- A CRITICAL reassessment records `BLOCKED`; the password cannot override it. Other account/funds failures record `FAILED` with an explanation. Successful authorization applies both balances and final state atomically.
+- Repeated confirmation/cancellation requests return the existing terminal outcome without executing again. Concurrent confirmation and cancellation are serialized by the transaction lock.
+- The original fraud assessment remains unchanged. The fraud detail response includes a nullable `confirmation` assessment; transaction responses include `confirmationExpiresAt`, `resolvedAt`, `outcomeReason`, and viewer-specific `canConfirm`.
+- Cancellation and expiry record `CANCELLED` or `EXPIRED` without moving funds. History includes these states; pending detail/submission views refresh terminal outcomes automatically.
+
+The additive [V2 migration](backend/src/main/resources/db/migration/V2__pending_confirmations.sql) preserves existing records, including previously completed suspicious transactions. Authorizing a payment explicitly accepts the warning; it does not request a human review.
+
 ## Configuration
 
 | Variable | Purpose |
@@ -172,6 +188,10 @@ Admin provisioning requires both the `dev` Spring profile and `DEV_ADMIN_ENABLED
 | `JWT_SECRET` | Required JWT signing secret; generated by the initialization script |
 | `JWT_EXPIRATION_MS` | Token lifetime; default `3600000` (one hour) |
 | `DB_URL` | Optional JDBC URL override |
+| `CONFIRMATION_TTL_SECONDS` | Pending authorization lifetime; default `300` |
+| `CONFIRMATION_MAX_FAILURES` | Failed attempts before lockout; default `5` |
+| `CONFIRMATION_ATTEMPT_WINDOW_SECONDS` | Failed-attempt window; default `300` |
+| `CONFIRMATION_LOCK_SECONDS` | Per-user lockout duration; default `60` |
 | `FRAUD_HIGH_VALUE` | High-value threshold; default `10000` |
 | `FRAUD_RAPID_WINDOW_MINUTES` | Activity window; default `5` |
 | `FRAUD_RAPID_COUNT` / `FRAUD_REPEAT_COUNT` | Activity-count thresholds; both default to `3` |
@@ -198,6 +218,8 @@ All routes below use the `/api` prefix. Protected requests require an `Authoriza
 | POST | `/transactions/deposit` | Deposit into an owned account |
 | POST | `/transactions/withdraw` | Withdraw from an owned account |
 | POST | `/transactions/transfer` | Transfer between same-currency accounts |
+| POST | `/transactions/{id}/confirm` | Initiator only; JSON body `{ "password": "..." }` |
+| POST | `/transactions/{id}/cancel` | Initiator only; no password required |
 | GET | `/transactions` | List participating transactions |
 | GET | `/transactions/{id}` | View transaction details |
 | GET | `/transactions/{id}/fraud` | View the fraud decision and rules |
@@ -225,7 +247,12 @@ node .\scripts\verify-api.mjs
 
 # Suspicious outcome communication and persisted rule checks
 node .\scripts\verify-outcomes.mjs
+
+# Authorization, concurrency, rate limiting, reassessment, and expiry
+node .\scripts\verify-confirmations.mjs
 ```
+
+The confirmation verifier creates isolated development records and exercises real concurrent requests. It waits for the configured deadline to test expiry. For a shorter run, set `$env:CONFIRMATION_TTL_SECONDS = "20"` in the backend terminal before starting it; remove that variable and restart afterward to restore the five-minute default.
 
 The outcome verifier creates a new development customer and checks MEDIUM/HIGH completed transfers and a CRITICAL blocked transfer against the real API. It verifies balance effects and history persistence, then renders the shared warning component with those stored analyses to check messages, reasons, and loading/error states. It uses existing frontend dependencies and default fraud thresholds. These component checks do not replace browser interaction testing.
 
@@ -233,10 +260,11 @@ The API verifier requires the backend running with `-Dev`, a generated admin con
 
 ### Verification coverage
 
-The last recorded verification on **2026-10-10** passed:
+The last recorded verification on **2026-10-11** passed:
 
-- **9 backend tests:** fraud rules, deterministic locking, exact balance changes, critical blocking, currency/ownership/funds/status checks, recipient access, and stored account types.
-- **15 live API verification groups:** authentication and authorization, account operations, incoming-transfer visibility, rejected operations with unchanged balances, fraud persistence, filters/pagination, admin monitoring, reciprocal concurrent transfers, and the Vite proxy.
+- **21 backend tests:** fraud rules, deterministic locking, exact balance changes, critical blocking, currency/ownership/funds/status checks, recipient access, and stored account types.
+- **9 live confirmation verification groups:** pending balance protection, wrong/unauthorized passwords, persisted per-user throttling, cancellation, duplicate/concurrent authorization, insufficient funds, CRITICAL reassessment, and scheduled expiry.
+- **15 existing live API verification groups:** authentication and authorization, account operations, incoming-transfer visibility, rejected operations with unchanged balances, fraud persistence, filters/pagination, admin monitoring, reciprocal concurrent transfers, and the Vite proxy.
 - Native MySQL connectivity, Flyway validation, Hibernate schema validation, and the frontend production build.
 
 Browser interaction and visual layout are not covered by automated tests. Manual review should include refresh persistence, logout and expiry behavior, form validation, filters/pagination, admin navigation, and narrow-screen layouts.
