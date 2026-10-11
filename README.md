@@ -4,18 +4,23 @@
 
 LedgerGuard is a full-stack portfolio application for managing accounts, transferring funds, and reviewing suspicious activity. Customers can track their balances and transaction history, while administrators can monitor activity across the ledger and inspect the reasons behind each fraud decision.
 
-The project demonstrates password-confirmed authorization, transactional consistency, role-based authorization, concurrent account updates, and a React interface backed by real APIs. It is a development banking simulation; deposits and withdrawals do not connect to external payment networks.
+The project demonstrates idempotent payments, password-confirmed authorization, administrator fraud overrides, an append-only audit trail, revocable sessions, and a React interface backed by real APIs. It is a development banking simulation; deposits and withdrawals do not connect to external payment networks.
 
 ## Features
 
 | Area | Capabilities |
 | --- | --- |
-| Authentication | Registration, BCrypt password hashing, expiring JWTs, persistent sign-in, logout, and protected routes |
+| Authentication | BCrypt passwords, session-specific JWTs, password change, session list/revocation, and server-side logout |
 | Accounts | Checking and savings accounts, zero opening balance in the UI, and balances grouped by currency |
 | Money movement | Deposits, withdrawals, and same-currency transfers with ownership, account status, and balance checks |
 | Transaction history | Incoming and outgoing activity, type/status/risk/date filters, server-side pagination, and transaction details |
 | Fraud analysis | Risk scores, triggered rules, decision explanations, and persisted blocked attempts |
-| Administration | Activity metrics, charts, paginated transaction monitoring, and high/critical-risk review |
+| Administration | Metrics, monitoring, critical review queue, reasoned approval/rejection, and filtered audit trail |
+| Payment reliability | User/operation-scoped idempotency keys, deterministic locks, and atomic ledger/audit/notification writes |
+| Notifications | Private in-app updates, unread counts, mark-as-read, and transaction links |
+| Beneficiaries | Save external account numbers, rename/remove destinations, and select them in transfers |
+| Statements | Owned-account CSV/PDF downloads with verified opening/closing balances and UTC date ranges |
+| Insights | Monthly completed inflows/outflows/net by account and currency, excluding own-account transfers from user summaries |
 
 ## Architecture
 
@@ -27,7 +32,7 @@ flowchart LR
     API --> AUTH["JWT authentication and authorization"]
     AUTH --> SERVICES["Account and transaction services"]
     SERVICES --> FRAUD["Rule-based fraud engine"]
-    SERVICES --> DATA["Spring Data JPA / Hibernate"]
+    SERVICES --> DATA["JPA / Hibernate + JDBC"]
     DATA --> DB[("MySQL")]
     FLYWAY["Flyway migrations"] --> DB
 ```
@@ -45,7 +50,7 @@ flowchart LR
 ### Transaction consistency and access control
 
 - Money uses Java `BigDecimal` and MySQL `DECIMAL(19,2)`. API responses serialize monetary values as decimal strings; the frontend sums balances using integer cents.
-- Balance updates, transaction records, and fraud analyses execute within a database transaction.
+- Balance updates, transaction records, fraud analyses, ledger movements, audit events, notifications, and idempotency outcomes commit in one database transaction.
 - Transfers acquire pessimistic account locks in ascending account-ID order to reduce deadlock risk during reciprocal transfers.
 - Customers can access transactions involving their accounts, including incoming transfers. Unrelated transaction and fraud details return `404`.
 - Public registration always creates a `CUSTOMER`. Admin endpoints require server-side `ADMIN` authorization.
@@ -58,9 +63,15 @@ flowchart LR
 | `users` | Customer/admin identity and password hash |
 | `accounts` | Account ownership, type, currency, status, balance, and version |
 | `transactions` | Money movement or blocked attempt, participating accounts, status, and risk score |
-| `fraud_analyses` | Immutable original assessment and a separate confirmation-time assessment |
+| `fraud_analyses` | Original, confirmation-time, and administrator approval-time assessments |
 | `fraud_rule_results` | Individual triggered rules, explanations, and score contributions |
-| `confirmation_guards` | Per-user failed-password counters and temporary confirmation lockouts |
+| `confirmation_guards` | Per-user failed-password counters and temporary lockouts |
+| `idempotency_records` | Request fingerprints and original public outcomes, scoped to user and operation |
+| `audit_events` | Append-only actor, action, status transition, reason, transaction reference, and timestamp |
+| `notifications` | User-owned, deduplicated transaction updates with read state |
+| `beneficiaries` | User-owned friendly names for external account destinations |
+| `account_baselines` / `ledger_movements` | Verified balance baseline and signed completed movements |
+| `user_sessions` | Session identity, lifetime, revocation, and available request metadata; no raw JWTs |
 
 See the [initial schema migration](backend/src/main/resources/db/migration/V1__initial_schema.sql) for foreign keys, indexes, and column definitions.
 
@@ -83,9 +94,9 @@ Scores are capped at 100.
 | 0-29 | LOW | Approve |
 | 30-59 | MEDIUM | Await initiating user password confirmation; no funds move |
 | 60-79 | HIGH | Await initiating user password confirmation; no funds move |
-| 80-100 | CRITICAL | Block; persist the attempt and reasons without changing balances |
+| 80-100 | CRITICAL | New outgoing attempt awaits admin review; no funds move or are reserved |
 
-New MEDIUM/HIGH outgoing transactions display **Pending confirmation** and **Suspicious activity detected**. Completed suspicious transactions retain their warning. Blocked transactions display **Blocked**. Submission results, history, and details explain whether money moved and balances changed, and show the reasons stored with the fraud analysis. Risk level and score provide supporting context. A flag indicates unusual activity, not proof of fraud; it does not initiate a human review workflow.
+New MEDIUM/HIGH outgoing transactions display **Pending confirmation** and **Suspicious activity detected**. Completed suspicious transactions retain their warning. Blocked transactions display **Blocked**. Submission results, history, and details explain whether money moved and balances changed, and show the reasons stored with the fraud analysis. Risk level and score provide supporting context. A flag indicates unusual activity, not proof of fraud. New critical attempts display **Awaiting admin review**. Historical `BLOCKED` records remain non-executable; a critical password-confirmation reassessment is also blocked and cannot be approved.
 
 The engine evaluates stored transaction activity, including blocked attempts in activity counts. Its thresholds are configurable; it does not use machine learning. Implementation: [FraudDetectionService.java](backend/src/main/java/com/portfolio/fraud/fraud/FraudDetectionService.java).
 
@@ -176,7 +187,42 @@ LOW-risk outgoing transactions execute normally. MEDIUM/HIGH transactions are pe
 - The original fraud assessment remains unchanged. The fraud detail response includes a nullable `confirmation` assessment; transaction responses include `confirmationExpiresAt`, `resolvedAt`, `outcomeReason`, and viewer-specific `canConfirm`.
 - Cancellation and expiry record `CANCELLED` or `EXPIRED` without moving funds. History includes these states; pending detail/submission views refresh terminal outcomes automatically.
 
-The additive [V2 migration](backend/src/main/resources/db/migration/V2__pending_confirmations.sql) preserves existing records, including previously completed suspicious transactions. Authorizing a payment explicitly accepts the warning; it does not request a human review.
+The additive [V2 migration](backend/src/main/resources/db/migration/V2__pending_confirmations.sql) preserves existing records, including previously completed suspicious transactions. Password authorization explicitly accepts the warning; it is separate from the administrator review queue for new critical attempts.
+
+## Review lifecycle and payment retries
+
+| Initial decision or action | Recorded outcome | Balance effect |
+| --- | --- | --- |
+| LOW outgoing / deposit | `COMPLETED` | Apply once |
+| MEDIUM/HIGH outgoing | `PENDING_CONFIRMATION` | None; no reservation |
+| New CRITICAL outgoing | `AWAITING_REVIEW` | None; no reservation |
+| Correct password, checks pass | `COMPLETED` | Apply once |
+| Password reassessment becomes CRITICAL | `BLOCKED` | None; cannot be overridden |
+| Admin approval, account checks pass | `COMPLETED` with `ADMIN_OVERRIDE` assessment | Apply once, even if reassessment remains critical |
+| Admin rejection | `REJECTED` | None |
+| Account/currency/funds checks fail at confirmation or approval | `FAILED` | None |
+| Initiator cancels either pending state | `CANCELLED` | None |
+| Either authorization deadline passes | `EXPIRED` | None |
+
+Administrators must provide a reason (1?180 characters). Approval locks the transaction, then accounts in ascending ID order; rechecks ownership, active status, matching currencies and funds; and runs the unchanged fraud engine excluding the current attempt. The separate assessment records an explicit override, never a disabled rule. Conflicting decisions return HTTP 409. The default review lifetime is 24 hours; the scheduler and decision endpoints enforce expiry. No terminal state returns to a pending state. Customers can cancel their own requests while pending.
+
+Every deposit, withdrawal, transfer, confirmation, cancellation, and admin decision requires an `Idempotency-Key` header: 16?80 letters, digits, hyphens or underscores (a UUID works). Keys are scoped to the authenticated user and operation, including the transaction ID for decisions. Reuse a key with identical content to replay the original outcome, including domain rejection errors. Different content returns HTTP 409. Authentication and request-shape validation occur before this protocol. Concurrent retries serialize on a database primary key; financial changes and the stored response commit together. Unexpected server failures roll back the whole operation.
+
+The frontend retains a submission key for transport/5xx retries and creates a new key after a definitive outcome or changed input. Keys live only in component memory; after a browser reload, check history before submitting again. Replayed creation responses intentionally show their original pending state; fetch transaction details for its current state. Request fingerprints use HMAC; passwords and raw request bodies are never stored in idempotency records.
+
+## Statements, insights, and history coverage
+
+The additive [V3 migration](backend/src/main/resources/db/migration/V3__ledger_workspace.sql) snapshots each existing account's current balance. New accounts record their actual opening balance. Every subsequent completed transaction records signed account movements atomically with the balance change. Statements calculate opening and closing balances from that baseline and movements at **settlement time**, including payments authorized later than creation. Pending, blocked, failed, rejected, cancelled and expired attempts do not contribute.
+
+Legacy initial balances and exact historical settlement times cannot be proven from the old schema. Requests starting before an account's verified baseline date return HTTP 409 instead of inventing earlier balances. On the baseline date, the statement explicitly begins at the recorded baseline instant. CSV and PDF include this coverage and provenance. Only account owners can download statements; administrators have no exception. CSV text fields neutralize spreadsheet formulas. The PDF is paginated text using built-in Helvetica; unsupported non-Latin glyphs are replaced with question marks. CSV preserves Unicode.
+
+Insights aggregate completed signed movements by UTC month and currency from each account's coverage start. Account-level views include incoming/outgoing internal transfers; user-level views exclude transfers between the user's own accounts. Currencies are never added together. Pre-baseline activity is excluded and coverage is shown. No spending categories are inferred.
+
+## Sessions and security settings
+
+Every newly issued JWT carries a random session ID. Protected requests require both a valid signed JWT and an unexpired, nonrevoked server session. Existing tokens without a session ID are rejected with HTTP 401 after migration: sign in again. No raw token is stored server-side. Sessions show creation, last activity, expiry, user-agent and direct network address; this metadata does not establish a verified device identity.
+
+Logout revokes the current session. Users can revoke an individual owned session or all other sessions. Password change checks the current BCrypt password, validates the new password (8+ characters, at most 72 UTF-8 bytes, different from the current password), and revokes all sessions atomically. Fresh login is required. Password-change failures share the persistent per-user password guard with confirmations. The frontend clears password inputs on submission and never stores them in browser storage. Already-running requests may finish when a session is revoked; subsequent requests are denied.
 
 ## Configuration
 
@@ -188,6 +234,7 @@ The additive [V2 migration](backend/src/main/resources/db/migration/V2__pending_
 | `JWT_SECRET` | Required JWT signing secret; generated by the initialization script |
 | `JWT_EXPIRATION_MS` | Token lifetime; default `3600000` (one hour) |
 | `DB_URL` | Optional JDBC URL override |
+| `REVIEW_TTL_SECONDS` | Admin review lifetime; default `86400` (24 hours) |
 | `CONFIRMATION_TTL_SECONDS` | Pending authorization lifetime; default `300` |
 | `CONFIRMATION_MAX_FAILURES` | Failed attempts before lockout; default `5` |
 | `CONFIRMATION_ATTEMPT_WINDOW_SECONDS` | Failed-attempt window; default `300` |
@@ -228,6 +275,22 @@ All routes below use the `/api` prefix. Protected requests require an `Authoriza
 | GET | `/admin/fraud` | Monitor HIGH and CRITICAL transactions |
 | GET | `/admin/transactions/{id}` | Review a transaction as an admin |
 | GET | `/admin/transactions/{id}/fraud` | Review its fraud analysis |
+| GET | `/admin/reviews` | Paginated pending critical review queue |
+| POST | `/admin/reviews/{id}/decision` | `{ "approve": true, "reason": "..." }`, or false to reject |
+| GET | `/admin/audit` | Paginated audit; filter actorId, transactionId, action, from, to |
+| GET | `/transactions/{id}/timeline` | Customer-safe participating-transaction audit timeline |
+| GET | `/notifications` / `/notifications/unread` | Paginated owned notifications / unread count |
+| POST | `/notifications/{id}/read` | Mark an owned notification as read |
+| GET / POST | `/beneficiaries` | List / save accountNumber and friendlyName |
+| PATCH / DELETE | `/beneficiaries/{id}` | Rename via friendlyName / remove an owned beneficiary |
+| GET | `/statements/coverage` | Verified history start for each owned account |
+| GET | `/accounts/{id}/statement` | from/to UTC dates; format=json, csv, or pdf |
+| GET | `/insights` | from/to UTC dates; optional accountId and currency |
+| GET | `/security/sessions` | List active owned sessions |
+| DELETE | `/security/sessions/{id}` | Revoke an owned session |
+| POST | `/security/sessions/revoke-others` | Revoke other sessions |
+| POST | `/security/logout` | Revoke current session |
+| POST | `/security/password` | currentPassword/newPassword; revokes all sessions |
 
 Transaction lists accept `type`, `status`, `risk`, `from`, `to`, `page`, and `size`. Dates are ISO-8601 instants; page numbers start at zero and page sizes range from 1 to 100.
 
@@ -250,32 +313,58 @@ node .\scripts\verify-outcomes.mjs
 
 # Authorization, concurrency, rate limiting, reassessment, and expiry
 node .\scripts\verify-confirmations.mjs
+
+# All eight workspace additions, including review/session/report contracts
+node .\scripts\verify-workspace.mjs
 ```
 
 The confirmation verifier creates isolated development records and exercises real concurrent requests. It waits for the configured deadline to test expiry. For a shorter run, set `$env:CONFIRMATION_TTL_SECONDS = "20"` in the backend terminal before starting it; remove that variable and restart afterward to restore the five-minute default.
 
-The outcome verifier creates a new development customer and checks MEDIUM/HIGH completed transfers and a CRITICAL blocked transfer against the real API. It verifies balance effects and history persistence, then renders the shared warning component with those stored analyses to check messages, reasons, and loading/error states. It uses existing frontend dependencies and default fraud thresholds. These component checks do not replace browser interaction testing.
+The outcome verifier creates a new development customer and checks MEDIUM/HIGH completed transfers and a CRITICAL review request against the real API. It verifies balance effects and history persistence, then renders the shared warning component with those stored analyses to check messages, reasons, and loading/error states. It uses existing frontend dependencies and default fraud thresholds. These component checks do not replace browser interaction testing.
 
 The API verifier requires the backend running with `-Dev`, a generated admin configuration, the frontend, and default fraud thresholds. Each run creates two new test customers and development transactions. It preserves existing records and stores generated logins and results under git-ignored `.local/`.
 
 ### Verification coverage
 
-The last recorded verification on **2026-10-11** passed:
+Verification on **2026-10-11** passed:
 
-- **21 backend tests:** fraud rules, deterministic locking, exact balance changes, critical blocking, currency/ownership/funds/status checks, recipient access, and stored account types.
+- **31 backend tests:** fraud rules, confirmation and review lifecycles, deterministic locking, balances, closed-state protection, access controls, CSV escaping, and multipage PDF structure.
+- **12 workspace API verification groups:** concurrent idempotency and error replay, review approvals/rejection/races/expiry, audit/notification ownership, beneficiaries, CSV/PDF reconciliation, session revocation/password changes, and currency-separated insights.
 - **9 live confirmation verification groups:** pending balance protection, wrong/unauthorized passwords, persisted per-user throttling, cancellation, duplicate/concurrent authorization, insufficient funds, CRITICAL reassessment, and scheduled expiry.
 - **15 existing live API verification groups:** authentication and authorization, account operations, incoming-transfer visibility, rejected operations with unchanged balances, fraud persistence, filters/pagination, admin monitoring, reciprocal concurrent transfers, and the Vite proxy.
 - Native MySQL connectivity, Flyway validation, Hibernate schema validation, and the frontend production build.
 
-Browser interaction and visual layout are not covered by automated tests. Manual review should include refresh persistence, logout and expiry behavior, form validation, filters/pagination, admin navigation, and narrow-screen layouts.
+Browser interaction and visual layout are **unverified**: no browser automation is installed. Manual checklist: retry a payment after a connection failure; authorize/cancel a warning; approve/reject a critical attempt as admin; follow a notification and mark it read; save/rename/select/remove a beneficiary; preview/download a statement; filter insights; revoke another session/change password; and check navigation at a narrow viewport. API and server-rendered component checks do not replace these browser interactions.
+
+For the workspace expiry verifier, stop the backend and use a **temporary test terminal**:
+
+```powershell
+Set-Location C:\Projects\Full-Stack\transaction-fraud-system
+$env:CONFIRMATION_TTL_SECONDS = "30"
+$env:REVIEW_TTL_SECONDS = "30"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\start-backend.ps1 -Dev
+```
+
+Run `node .\scripts\verify-workspace.mjs` in a second terminal. Afterwards stop the backend, remove the temporary overrides, and restart:
+
+```powershell
+Remove-Item Env:CONFIRMATION_TTL_SECONDS -ErrorAction SilentlyContinue
+Remove-Item Env:REVIEW_TTL_SECONDS -ErrorAction SilentlyContinue
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\start-backend.ps1 -Dev
+```
+
+Verification creates isolated development accounts and transactions; it never resets data. Private credentials/reports stay in ignored `.local/`. Stop the old backend before applying migrations so no old application instance writes outside the new ledger workflow.
 
 ## Demo walkthrough
 
 1. Register two customers and create a USD account for each.
 2. Sign in as the first customer. Deposit USD 30,000, withdraw USD 50, and transfer USD 100.25 to the second account using its account ID.
-3. Within five minutes, attempt another transfer of USD 29,000. With default thresholds, high value (+45), rapid activity (+25), and balance risk (+20) produce a **90/100 CRITICAL** score. The attempt is recorded as **BLOCKED**, and neither balance changes.
+3. Within five minutes, attempt another transfer of USD 29,000. With default thresholds, high value (+45), rapid activity (+25), and balance risk (+20) produce a **90/100 CRITICAL** score. The attempt is recorded as **AWAITING_REVIEW**, and neither balance changes.
 4. Open its transaction details to inspect the decision and triggered rules.
-5. Sign in as the recipient to review the incoming transfer, then as the development admin to inspect ledger metrics and fraud monitoring.
+5. Sign in as the development admin, open **Review queue**, inspect the reasons and timeline, then approve with an explicit reason or reject. Approval moves funds once; rejection leaves balances unchanged.
+6. Sign in as the recipient, follow the incoming-transfer notification, and mark it read. Save the other account as a beneficiary for a future transfer.
+7. Open **Statements** for today to reconcile completed movements; download CSV/PDF. Open **Insights** to compare inflows/outflows by currency.
+8. Open **Security settings**, revoke another session, then change the password and verify that a fresh sign-in is required.
 
 Use fresh accounts for the reproducible score above. Additional activity or customized thresholds can change the result.
 
@@ -307,4 +396,4 @@ start-backend.ps1      Windows backend launcher
 
 LedgerGuard is intended for local development and portfolio review. Deposits and opening balances are simulated; no external funds are verified. Transfers require matching currencies, and the fraud engine does not normalize historical amounts across currencies. Admin volume metrics represent gross transaction activity, not account balances.
 
-Production use would require additional work, including payment integration, deployment hardening, session-storage review, rate limiting, operational monitoring, and broader integration testing. Local secrets, generated demo credentials, logs, dependencies, and build outputs are excluded from Git.
+Production use would require payment integration, deployment hardening, review of browser token storage (currently localStorage), login/registration abuse controls, operational monitoring, and broader browser/security testing. Audit events are append-only through the application; they are not tamper-proof against a database administrator. Idempotency and audit data currently have no retention purge. In-app notifications use polling, with no external delivery service. Local secrets, generated demo credentials, logs, dependencies, and build outputs are excluded from Git.

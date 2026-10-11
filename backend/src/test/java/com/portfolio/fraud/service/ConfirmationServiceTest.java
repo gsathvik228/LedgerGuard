@@ -23,8 +23,8 @@ class ConfirmationServiceTest {
     FraudAnalysisRepository analyses=mock(FraudAnalysisRepository.class);
     FraudDetectionService fraud=mock(FraudDetectionService.class);
     PasswordEncoder encoder=mock(PasswordEncoder.class);
-    TransactionService views=new TransactionService(accounts,transactions,analyses,fraud);
-    ConfirmationService service=new ConfirmationService(transactions,accounts,users,guards,analyses,fraud,encoder,views);
+    TransactionService views=new TransactionService(accounts,transactions,analyses,fraud,mock(LedgerJournal.class));
+    ConfirmationService service=new ConfirmationService(transactions,accounts,users,guards,analyses,fraud,encoder,views,mock(LedgerJournal.class));
     User alice=new User("alice@example.test","hash","Alice");
     User bob=new User("bob@example.test","other","Bob");
     Account sender=new Account("S",alice,"CHECKING",new BigDecimal("20000"),"USD");

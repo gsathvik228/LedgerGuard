@@ -1,6 +1,6 @@
 // Native Node.js API verification. Creates new development records; never deletes data.
 import assert from 'node:assert/strict';
-import { randomBytes, createHmac } from 'node:crypto';
+import { randomBytes, randomUUID, createHmac } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -29,7 +29,7 @@ writeFileSync(root+'.local/demo-credentials.json',JSON.stringify(privateInfo,nul
 async function request(path,{token,body,status=200,method}={}) {
   const response=await fetch(base+path,{
     method:method||(body?'POST':'GET'),
-    headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},
+    headers:{'Content-Type':'application/json','Idempotency-Key':randomUUID(),...(token?{Authorization:'Bearer '+token}:{})},
     body:body===undefined?undefined:JSON.stringify(body),
     signal:AbortSignal.timeout(15000)
   });
@@ -104,17 +104,17 @@ async function run() {
   pass('Invalid amounts, insufficient funds, same-account, cross-currency, and ownership failures leave balances unchanged');
 
   const blocked=await request('/transactions/transfer',{token:a,body:{senderAccountId:first.id,recipientAccountId:second.id,amount:'29000.00',description:'Reproducible critical-risk demo'}});
-  assert.equal(blocked.status,'BLOCKED');assert.equal(blocked.riskLevel,'CRITICAL');assert.ok(blocked.riskScore>=80);
+  assert.equal(blocked.status,'AWAITING_REVIEW');assert.equal(blocked.riskLevel,'CRITICAL');assert.ok(blocked.riskScore>=80);
   assert.deepEqual(await balances(a),beforeA);assert.deepEqual(await balances(b),beforeB);
   const analysis=await request('/transactions/'+blocked.id+'/fraud',{token:a});
-  assert.equal(analysis.decision,'BLOCK');
+  assert.equal(analysis.decision,'REVIEW');
   assert.ok(analysis.rules.some(r=>r.ruleName==='HIGH_VALUE'));
   assert.ok(analysis.rules.some(r=>r.ruleName==='RAPID_TRANSACTIONS'));
   assert.ok(analysis.rules.some(r=>r.ruleName==='BALANCE_RISK'));
-  assert.equal((await request('/transactions/'+blocked.id,{token:b})).status,'BLOCKED');
-  pass('CRITICAL transfer persists BLOCKED with explainable rules and unchanged balances');
+  assert.equal((await request('/transactions/'+blocked.id,{token:b})).status,'AWAITING_REVIEW');
+  pass('CRITICAL transfer persists AWAITING_REVIEW with explainable rules and unchanged balances');
 
-  const filtered=await request('/transactions?status=BLOCKED&risk=CRITICAL&type=TRANSFER&size=1',{token:a});
+  const filtered=await request('/transactions?status=AWAITING_REVIEW&risk=CRITICAL&type=TRANSFER&size=1',{token:a});
   assert.equal(filtered.content.length,1);assert.equal(filtered.content[0].id,blocked.id);
   const page0=await request('/transactions?size=1&page=0',{token:a});
   const page1=await request('/transactions?size=1&page=1',{token:a});
@@ -132,13 +132,13 @@ async function run() {
   const admin=await request('/auth/login',{body:{email:dev.DEV_ADMIN_EMAIL,password:dev.DEV_ADMIN_PASSWORD}});
   assert.equal(admin.role,'ADMIN');
   const metrics=await request('/admin/dashboard',{token:admin.token});
-  assert.ok(metrics.totalTransactions>=5);assert.ok(metrics.byStatus.BLOCKED>=1);assert.ok(Number(metrics.completedVolumeByCurrency.USD)>0);
+  assert.ok(metrics.totalTransactions>=5);assert.ok(metrics.byStatus.AWAITING_REVIEW>=1);assert.ok(Number(metrics.completedVolumeByCurrency.USD)>0);
   const all=await request('/admin/transactions?size=1',{token:admin.token});
   assert.equal(all.content.length,1);assert.ok(all.totalElements>=5);
-  const monitored=await request('/admin/fraud?risk=CRITICAL&status=BLOCKED&size=100',{token:admin.token});
+  const monitored=await request('/admin/fraud?risk=CRITICAL&status=AWAITING_REVIEW&size=100',{token:admin.token});
   assert.ok(monitored.content.some(t=>t.id===blocked.id));
   assert.equal((await request('/admin/transactions/'+transfer.id,{token:admin.token})).id,transfer.id);
-  assert.equal((await request('/admin/transactions/'+blocked.id+'/fraud',{token:admin.token})).decision,'BLOCK');
+  assert.equal((await request('/admin/transactions/'+blocked.id+'/fraud',{token:admin.token})).decision,'REVIEW');
   pass('Development admin login, currency-separated metrics, paginated monitoring, and details');
 
   const reciprocal=await Promise.all([

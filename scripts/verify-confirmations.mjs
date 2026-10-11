@@ -1,7 +1,7 @@
 // Runs against native MySQL through the real API. Adds isolated development records only.
 // For a quick expiry check, start the backend with CONFIRMATION_TTL_SECONDS=20.
 import assert from 'node:assert/strict';
-import {randomBytes} from 'node:crypto';
+import {randomBytes,randomUUID} from 'node:crypto';
 import {readFileSync,writeFileSync,mkdirSync} from 'node:fs';
 const root=new URL('../',import.meta.url);
 const base='http://127.0.0.1:8080/api';
@@ -9,7 +9,7 @@ const stamp=Date.now();
 const credentials=[];
 const groups=[];
 async function request(path,token,body,status=200) {
-    const r=await fetch(base+path,{method:body!==undefined?'POST':'GET',headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},body:body!==undefined?JSON.stringify(body):undefined,signal:AbortSignal.timeout(20000)});
+    const r=await fetch(base+path,{method:body!==undefined?'POST':'GET',headers:{'Content-Type':'application/json','Idempotency-Key':randomUUID(),...(token?{Authorization:'Bearer '+token}:{})},body:body!==undefined?JSON.stringify(body):undefined,signal:AbortSignal.timeout(20000)});
     assert.equal(r.status,status,path+' unexpected HTTP status');
     return r.json();
 }
@@ -97,8 +97,8 @@ async function run() {
     assert.equal(criticalAudit.confirmation.riskScore,90);
     assert.equal((await confirm(criticalWallet,critical)).status,'BLOCKED');
     const originallyBlocked=await transfer(criticalWallet,'29000.00');
-    assert.equal(originallyBlocked.status,'BLOCKED');
-    assert.equal((await confirm(criticalWallet,originallyBlocked)).status,'BLOCKED');
+    assert.equal(originallyBlocked.status,'AWAITING_REVIEW');
+    assert.equal((await confirm(criticalWallet,originallyBlocked)).status,'AWAITING_REVIEW');
     pass('HIGH pending payment becomes CRITICAL on reassessment; original and confirmation assessments preserved; blocks cannot be overridden');
 
     const raceWallet=await wallet('cancel-race');

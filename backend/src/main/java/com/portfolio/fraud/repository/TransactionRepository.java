@@ -27,9 +27,6 @@ public interface TransactionRepository extends JpaRepository<Transaction,Long> {
     @Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
     @Query("select t from Transaction t where t.id=:id")
     Optional<Transaction> findByIdForUpdate(@Param("id") Long id);
-    @Modifying
-    @Query("update Transaction t set t.status=com.portfolio.fraud.entity.TransactionStatus.EXPIRED, t.resolvedAt=:now, t.outcomeReason='Confirmation period expired. No funds moved.' where t.status=com.portfolio.fraud.entity.TransactionStatus.PENDING_CONFIRMATION and t.confirmationExpiresAt<=:now")
-    int expirePending(@Param("now") Instant now);
     @Query("select count(t) from Transaction t where t.initiatedBy.id=:id and t.createdAt>:after and t.id<>:exclude")
     long countActivityExcluding(@Param("id") Long id,@Param("after") Instant after,@Param("exclude") Long exclude);
     @Query("select count(t) from Transaction t where t.senderAccount.id=:sender and t.recipientAccount.id=:recipient and t.createdAt>:after and t.id<>:exclude")

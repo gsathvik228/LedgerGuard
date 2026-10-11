@@ -20,7 +20,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => { current = false; };
   }, [session?.token]);
   useEffect(() => {
-    const expired = () => { saveSession(null); setSession(null); setError(''); setNotice('Your session expired. Please sign in again.'); };
+    const expired = () => { saveSession(null); setSession(null); setError(''); setNotice('Your session has ended or was revoked. Please sign in again.'); };
     const synced = () => { setSession(readSession()); setError(''); };
     window.addEventListener('session-expired',expired);
     window.addEventListener('storage',synced);
@@ -28,7 +28,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => { clearTimeout(timer); window.removeEventListener('session-expired',expired); window.removeEventListener('storage',synced); };
   }, [session?.token]);
   const login = (value:Session) => { saveSession(value); setSession(value); setNotice(''); setError(''); };
-  const logout = () => { saveSession(null); setSession(null); setError(''); setNotice('You have been signed out.'); };
+  const logout = async () => { try { await api.post('/security/logout'); saveSession(null); setSession(null); setError(''); setNotice('You have been signed out.'); } catch(e) { setError(errorMessage(e)); } };
   if (checking) return <div className="boot">Checking your session…</div>;
   if (error && session) return <div className="boot"><p role="alert">{error}</p><button onClick={()=>window.location.reload()}>Retry</button><button className="secondary" onClick={logout}>Sign out</button></div>;
   return <AuthContext.Provider value={{session,login,logout,notice}}>{children}</AuthContext.Provider>;

@@ -1,0 +1,96 @@
+// Real native-MySQL API verification. Adds isolated development data; never resets it.
+// For fast expiry checks launch with REVIEW_TTL_SECONDS=30 and CONFIRMATION_TTL_SECONDS=30.
+import assert from 'node:assert/strict';
+import {randomBytes,randomUUID,createHmac} from 'node:crypto';
+import {readFileSync,writeFileSync,mkdirSync} from 'node:fs';
+const root=new URL('../',import.meta.url),base='http://127.0.0.1:8080/api',stamp=Date.now(),checks=[],credentials=[];
+function env(name){return Object.fromEntries(readFileSync(new URL(name,root),'utf8').replace(/^\uFEFF/,'').split(/\r?\n/).filter(l=>l.trim()&&!l.startsWith('#')&&l.includes('=')).map(l=>{const i=l.indexOf('=');return[l.slice(0,i).trim(),l.slice(i+1).trim().replace(/^['"]|['"]$/g,'')];}));}
+async function req(path,token,body,options={}){const r=await fetch(base+path,{method:options.method||(body===undefined?'GET':'POST'),headers:{'Content-Type':'application/json','Idempotency-Key':options.key||randomUUID(),...(token?{Authorization:'Bearer '+token}:{})},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000)});assert.equal(r.status,options.status??200,path+' HTTP status');if(options.raw)return r;const text=await r.text();return text?JSON.parse(text):null;}
+function pass(s){checks.push(s);console.log('PASS '+s);}
+async function user(label,initial='30000.00',currency='USD'){const c={email:`workspace-${label}-${stamp}@example.test`,password:randomBytes(20).toString('hex'),fullName:'Workspace '+label};credentials.push(c);const auth=await req('/auth/register',null,c);const account=await req('/accounts',auth.token,{accountType:'CHECKING',currency,initialBalance:initial});return {...c,token:auth.token,account};}
+const balance=async u=>(await req('/accounts',u.token)).find(a=>a.id===u.account.id).balance;
+const deposit=(u,amount,options={})=>req('/transactions/deposit',u.token,{accountId:u.account.id,amount},options);
+const withdrawal=(u,amount,options={})=>req('/transactions/withdraw',u.token,{accountId:u.account.id,amount},options);
+const confirm=(u,t,password=u.password,options={})=>req(`/transactions/${t.id}/confirm`,u.token,{password},options);
+const cancel=(u,t)=>req(`/transactions/${t.id}/cancel`,u.token,{});
+const detail=(u,t)=>req(`/transactions/${t.id}`,u.token);
+let admin;
+const decide=(t,approve=true,options={})=>req(`/admin/reviews/${t.id}/decision`,admin.token,{approve,reason:'Development verification: explicit decision after checking the recorded findings.'},options);
+async function critical(label){const u=await user(label);await deposit(u,'1.00');const t=await withdrawal(u,'10000.00');assert.equal(t.status,'AWAITING_REVIEW');assert.equal(await balance(u),'30001.00');return {u,t};}
+async function run(){
+ const dev=env('.env.development');admin=await req('/auth/login',null,{email:dev.DEV_ADMIN_EMAIL,password:dev.DEV_ADMIN_PASSWORD});
+ const alice=await user('alice','0.00'),bob=await user('bob','0.00');
+ const key=randomUUID();const repeated=await Promise.all(Array.from({length:6},()=>deposit(alice,'30000.00',{key})));assert.ok(repeated.every(t=>t.id===repeated[0].id));assert.equal(await balance(alice),'30000.00');
+ await deposit(alice,'30001.00',{key,status:409});assert.equal(await balance(alice),'30000.00');
+ await deposit(bob,'1.00',{key});assert.equal(await balance(bob),'1.00');
+ const outgoingKey=randomUUID();const low=await Promise.all(Array.from({length:3},()=>withdrawal(alice,'1.00',{key:outgoingKey})));assert.ok(low.every(t=>t.id===low[0].id));assert.equal(await balance(alice),'29999.00');
+ const failedUser=await user('retry-errors','0.00'),failedKey=randomUUID();await withdrawal(failedUser,'1.00',{key:failedKey,status:400});await deposit(failedUser,'5.00');await withdrawal(failedUser,'1.00',{key:failedKey,status:400});await withdrawal(failedUser,'2.00',{key:failedKey,status:409});assert.equal(await balance(failedUser),'5.00');
+ pass('User/operation-scoped concurrent retries execute once; changed content conflicts; insufficient-funds errors replay after funding');
+ const transferKey=randomUUID(),body={senderAccountId:alice.account.id,recipientAccountId:bob.account.id,amount:'10000.00'};
+ const pending=await req('/transactions/transfer',alice.token,body,{key:transferKey});assert.equal(pending.status,'PENDING_CONFIRMATION');
+ await confirm(bob,pending,bob.password,{status:403});const wrongKey=randomUUID();await Promise.all(Array.from({length:3},()=>confirm(alice,pending,'incorrect-password',{key:wrongKey,status:400})));await confirm(alice,pending,alice.password,{key:wrongKey,status:409});
+ const confirmKey=randomUUID();const confirmed=await Promise.all(Array.from({length:4},()=>confirm(alice,pending,alice.password,{key:confirmKey})));assert.ok(confirmed.every(t=>t.status==='COMPLETED'));assert.equal(await balance(alice),'19999.00');assert.equal(await balance(bob),'10001.00');
+ assert.deepEqual(await req('/transactions/transfer',alice.token,body,{key:transferKey}),pending); // replay original response, not current mutable state
+ const audit=await req(`/transactions/${pending.id}/timeline`,alice.token);assert.equal(audit.content.filter(e=>e.action==='CONFIRMATION_OUTCOME').length,1);assert.equal(audit.content.filter(e=>e.action==='PASSWORD_REJECTED').length,1);
+ assert.ok((await req('/transactions',bob.token)).content.some(t=>t.id===pending.id));
+ const original=await req(`/transactions/${pending.id}/fraud`,alice.token);assert.equal(original.decision,'CONFIRM');assert.equal(original.confirmation.decision,'APPROVE');assert.equal(original.confirmation.riskScore,45);
+ pass('Password confirmation, ownership, original-response replay, exactly-once concurrent execution and preserved assessments');
+ const notifications=await req('/notifications',bob.token);const incoming=notifications.content.find(n=>n.transactionId===pending.id);assert.ok(incoming);assert.equal(notifications.content.filter(n=>n.transactionId===pending.id).length,1);
+ await req(`/notifications/${incoming.id}/read`,alice.token,{}, {status:404});await req(`/notifications/${incoming.id}/read`,bob.token,{});assert.equal((await req('/notifications/unread',bob.token)).count,0);
+ await req('/admin/audit',alice.token,undefined,{status:403});
+ const outsider=await user('outsider');await req(`/transactions/${pending.id}/timeline`,outsider.token,undefined,{status:404});
+ pass('Audit events and incoming notifications match outcomes, deduplicate and enforce ownership');
+ const review=await critical('review');
+ await req(`/admin/reviews/${review.t.id}/decision`,review.u.token,{approve:true,reason:'Not permitted'},{status:403});
+ await req(`/admin/reviews/${review.t.id}/decision`,admin.token,{approve:true,reason:''},{status:400});
+ assert.equal((await confirm(review.u,review.t)).status,'AWAITING_REVIEW');
+ const reviewKey=randomUUID();const approvals=await Promise.all(Array.from({length:4},()=>decide(review.t,true,{key:reviewKey})));assert.ok(approvals.every(t=>t.status==='COMPLETED'));assert.equal(await balance(review.u),'20001.00');
+ await decide(review.t,false,{status:409});
+ const reviewAnalysis=await req(`/transactions/${review.t.id}/fraud`,review.u.token);assert.equal(reviewAnalysis.decision,'REVIEW');assert.equal(reviewAnalysis.review.decision,'ADMIN_OVERRIDE');assert.equal(reviewAnalysis.review.riskLevel,'CRITICAL');
+ const reviewEvents=await req(`/transactions/${review.t.id}/timeline`,review.u.token);assert.equal(reviewEvents.content.filter(e=>e.action==='ADMIN_APPROVED').length,1);
+ pass('Critical review, mandatory reasons, authorization, explicit override assessment and concurrent approval exactly once');
+ const rejected=await critical('reject');assert.equal((await decide(rejected.t,false)).status,'REJECTED');assert.equal(await balance(rejected.u),'30001.00');await decide(rejected.t,true,{status:409});
+ const cancelled=await critical('cancel');assert.equal((await cancel(cancelled.u,cancelled.t)).status,'CANCELLED');await decide(cancelled.t,true,{status:409});assert.equal(await balance(cancelled.u),'30001.00');
+ const insufficient=await critical('insufficient');const drain=await withdrawal(insufficient.u,'25000.00');assert.equal(drain.status,'AWAITING_REVIEW');assert.equal((await decide(drain)).status,'COMPLETED');assert.equal((await decide(insufficient.t)).status,'FAILED');assert.equal(await balance(insufficient.u),'5001.00');
+ const race=await critical('race');const raceResponses=await Promise.all([fetch(base+`/admin/reviews/${race.t.id}/decision`,{method:'POST',headers:{Authorization:'Bearer '+admin.token,'Content-Type':'application/json','Idempotency-Key':randomUUID()},body:JSON.stringify({approve:true,reason:'Concurrent approve verification'})}),fetch(base+`/admin/reviews/${race.t.id}/decision`,{method:'POST',headers:{Authorization:'Bearer '+admin.token,'Content-Type':'application/json','Idempotency-Key':randomUUID()},body:JSON.stringify({approve:false,reason:'Concurrent reject verification'})})]);assert.deepEqual(raceResponses.map(r=>r.status).sort(),[200,409]);const final=await detail(race.u,race.t);assert.equal(await balance(race.u),final.status==='COMPLETED'?'20001.00':'30001.00');
+ const cancelRace=await critical('cancel-race');const decisionResponse=fetch(base+`/admin/reviews/${cancelRace.t.id}/decision`,{method:'POST',headers:{Authorization:'Bearer '+admin.token,'Content-Type':'application/json','Idempotency-Key':randomUUID()},body:JSON.stringify({approve:true,reason:'Concurrent cancellation verification'})});await cancel(cancelRace.u,cancelRace.t);const decisionStatus=(await decisionResponse).status;assert.ok([200,409].includes(decisionStatus));const cancelledFinal=await detail(cancelRace.u,cancelRace.t);assert.ok(['COMPLETED','CANCELLED'].includes(cancelledFinal.status));assert.equal(await balance(cancelRace.u),cancelledFinal.status==='COMPLETED'?'20001.00':'30001.00');
+ pass('Review rejection, cancellation, insufficient funds and conflicting approval/rejection/cancellation races preserve balances');
+ const criticalPassword=await user('password-critical','0.00');await deposit(criticalPassword,'30000.00');const high=await withdrawal(criticalPassword,'29000.00');assert.equal(high.status,'PENDING_CONFIRMATION');await withdrawal(criticalPassword,'1.00');await withdrawal(criticalPassword,'1.00');assert.equal((await confirm(criticalPassword,high)).status,'BLOCKED');await decide(high,true,{status:409});assert.equal(await balance(criticalPassword),'29998.00');
+ pass('Password confirmation cannot override critical reassessment and blocked records cannot enter approval');
+ await req('/beneficiaries',alice.token,{accountNumber:bob.account.accountNumber,friendlyName:'Bob savings'});
+ const beneficiary=(await req('/beneficiaries',alice.token))[0];assert.equal(beneficiary.accountId,bob.account.id);assert.equal(beneficiary.email,undefined);
+ await req('/beneficiaries',alice.token,{accountNumber:alice.account.accountNumber,friendlyName:'Own account'},{status:400});await req('/beneficiaries',alice.token,{accountNumber:'LG-NOT-FOUND',friendlyName:'Missing'},{status:400});
+ await req(`/beneficiaries/${beneficiary.id}`,bob.token,{friendlyName:'Forbidden'},{method:'PATCH',status:404});await req(`/beneficiaries/${beneficiary.id}`,bob.token,undefined,{method:'DELETE',status:404});
+ await req(`/beneficiaries/${beneficiary.id}`,alice.token,{friendlyName:'Bob renamed'},{method:'PATCH'});assert.equal((await req('/beneficiaries',alice.token))[0].friendlyName,'Bob renamed');await req(`/beneficiaries/${beneficiary.id}`,alice.token,undefined,{method:'DELETE'});assert.equal((await req('/beneficiaries',alice.token)).length,0);
+ pass('Beneficiary creation, recipient validation, privacy, rename/removal and record ownership');
+ const day=new Date().toISOString().slice(0,10),dates=`from=${day}&to=${day}`;
+ const statement=await req(`/accounts/${alice.account.id}/statement?${dates}`,alice.token);assert.equal(statement.openingBalance,'0.00');assert.equal(statement.closingBalance,await balance(alice));assert.equal(statement.movements.length,3);
+ const initialStatement=await req(`/accounts/${review.u.account.id}/statement?${dates}`,review.u.token);assert.equal(initialStatement.openingBalance,'30000.00');assert.equal(initialStatement.closingBalance,'20001.00');
+ await req(`/accounts/${alice.account.id}/statement?${dates}`,bob.token,undefined,{status:404});await req(`/accounts/${alice.account.id}/statement?${dates}`,admin.token,undefined,{status:404});await req(`/accounts/${alice.account.id}/statement?from=2000-01-01&to=2000-01-02`,alice.token,undefined,{status:409});
+ const csv=await (await req(`/accounts/${alice.account.id}/statement?${dates}&format=csv`,alice.token,undefined,{raw:true})).text();assert.ok(csv.includes('Opening balance'));assert.ok(csv.includes(pending.id+','));
+ const pdf=Buffer.from(await (await req(`/accounts/${alice.account.id}/statement?${dates}&format=pdf`,alice.token,undefined,{raw:true})).arrayBuffer());assert.ok(pdf.subarray(0,8).toString().startsWith('%PDF-1.4'));assert.ok(pdf.toString().endsWith('%%EOF\n'));const xref=Number(pdf.toString().match(/startxref\n(\d+)/)[1]);assert.equal(pdf.subarray(xref,xref+4).toString(),'xref');
+ writeFileSync(new URL('.local/workspace-statement.pdf',root),pdf);
+ const textUser=await user('csv');await req('/transactions/deposit',textUser.token,{accountId:textUser.account.id,amount:'1.00',description:'=HYPERLINK("https://example.test")'});const safeCsv=await (await req(`/accounts/${textUser.account.id}/statement?${dates}&format=csv`,textUser.token,undefined,{raw:true})).text();assert.ok(safeCsv.includes("'=HYPERLINK"));
+ pass('CSV/PDF statements reconcile initial balances and completed movements; ownership, history coverage and formula escaping');
+ const insights=await req('/insights?'+dates,alice.token);assert.equal(insights.months[0].inflow,'30000.00');assert.equal(insights.months[0].outflow,'10001.00');assert.equal(insights.months[0].net,'19999.00');
+ const own=await user('own','500.00');const own2=await req('/accounts',own.token,{accountType:'SAVINGS',currency:'USD',initialBalance:'0.00'});await req('/transactions/transfer',own.token,{senderAccountId:own.account.id,recipientAccountId:own2.id,amount:'10.00'});assert.equal((await req('/insights?'+dates,own.token)).months.length,0);assert.equal((await req('/insights?'+dates+'&accountId='+own.account.id,own.token)).months[0].outflow,'10.00');
+ const eur=await req('/accounts',own.token,{accountType:'SAVINGS',currency:'EUR',initialBalance:'0.00'});await req('/transactions/deposit',own.token,{accountId:eur.id,amount:'7.00'});await deposit(own,'3.00');const separate=await req('/insights?'+dates,own.token);assert.equal(separate.months.length,2);assert.equal(separate.months.find(m=>m.currency==='EUR').inflow,'7.00');await req('/insights?'+dates+'&accountId='+alice.account.id,own.token,undefined,{status:404});
+ pass('Monthly insights reconcile with statements, separate currencies and exclude owned-account transfers from user summaries');
+ const secure=await user('security');const second=await req('/auth/login',null,{email:secure.email,password:secure.password});const sessions=await req('/security/sessions',secure.token);assert.equal(sessions.length,2);const other=sessions.find(s=>!s.current);await req('/security/sessions/'+other.id,bob.token,undefined,{method:'DELETE',status:404});await req('/security/sessions/'+other.id,secure.token,undefined,{method:'DELETE'});await req('/me',second.token,undefined,{status:401});
+ const third=await req('/auth/login',null,{email:secure.email,password:secure.password});await req('/security/sessions/revoke-others',secure.token,{});await req('/me',third.token,undefined,{status:401});
+ await req('/security/password',secure.token,{currentPassword:'incorrect-password',newPassword:'Temporary-New-Password-28'},{status:400});await req('/me',secure.token);
+ const fourth=await req('/auth/login',null,{email:secure.email,password:secure.password});const newPassword=randomBytes(20).toString('hex');await req('/security/password',secure.token,{currentPassword:secure.password,newPassword});await req('/me',secure.token,undefined,{status:401});await req('/me',fourth.token,undefined,{status:401});await req('/auth/login',null,{email:secure.email,password:secure.password},{status:401});credentials.find(c=>c.email===secure.email).password=newPassword;
+ const fresh=await req('/auth/login',null,{email:secure.email,password:newPassword});await req('/security/logout',fresh.token,{});await req('/me',fresh.token,undefined,{status:401});
+ const jwt=env('.env');const header=Buffer.from(JSON.stringify({alg:'HS256',typ:'JWT'})).toString('base64url');const payload=Buffer.from(JSON.stringify({sub:alice.email,exp:Math.floor(Date.now()/1000)+600})).toString('base64url');const unsigned=header+'.'+payload;const legacy=unsigned+'.'+createHmac('sha256',jwt.JWT_SECRET).update(unsigned).digest('base64url');await req('/me',legacy,undefined,{status:401});
+ pass('Session ownership, individual/all-other revocation, password change, logout and legacy JWT rejection');
+ const expiry=await critical('expiry');const pendingExpiryUser=await user('confirmation-expiry','0.00');await deposit(pendingExpiryUser,'30000.00');const pendingExpiry=await withdrawal(pendingExpiryUser,'10000.00');
+ const deadline=Math.max(new Date(expiry.t.reviewExpiresAt).getTime(),new Date(pendingExpiry.confirmationExpiresAt).getTime());const wait=deadline-Date.now()+6000;
+ if(wait>120000)throw new Error('Expiry verification requires temporary REVIEW_TTL_SECONDS and CONFIRMATION_TTL_SECONDS <= 110. Restart with 30-second development values.');
+ console.log('Waiting for recorded review and confirmation deadlines...');await new Promise(r=>setTimeout(r,Math.max(wait,0)));
+ assert.equal((await detail(expiry.u,expiry.t)).status,'EXPIRED');assert.equal((await detail(pendingExpiryUser,pendingExpiry)).status,'EXPIRED');await decide(expiry.t,true,{status:409});assert.equal((await confirm(pendingExpiryUser,pendingExpiry)).status,'EXPIRED');assert.equal(await balance(expiry.u),'30001.00');assert.equal(await balance(pendingExpiryUser),'30000.00');assert.ok((await req(`/transactions/${expiry.t.id}/timeline`,expiry.u.token)).content.some(e=>e.action==='EXPIRED'));assert.ok((await req('/notifications',expiry.u.token)).content.some(n=>n.message.includes('expired')));
+ pass('Scheduled confirmation/review expiry records audit and notification outcomes without moving funds');
+ const auditPage=await req('/admin/audit?transactionId='+pending.id+'&size=1',admin.token);assert.equal(auditPage.content.length,1);assert.ok(auditPage.totalPages>1);assert.ok(Array.isArray((await req('/admin/reviews',admin.token)).content));
+ pass('Admin review queue and filtered paginated audit APIs');
+}
+mkdirSync(new URL('.local',root),{recursive:true});
+try{await run();console.log(`All ${checks.length} workspace verification groups passed.`);}finally{writeFileSync(new URL(`.local/workspace-credentials-${stamp}.json`,root),JSON.stringify(credentials,null,2));writeFileSync(new URL('.local/workspace-verification.json',root),JSON.stringify({at:new Date().toISOString(),checks},null,2));}

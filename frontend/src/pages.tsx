@@ -2,6 +2,8 @@ import { useState, type FormEvent } from 'react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 import { api, errorMessage } from './api';
 import { OutcomeNotice } from './outcome';
+import { useSubmission } from './submission';
+import { ReviewActions, Timeline, type Beneficiary } from './workspace';
 import { ConfirmationActions } from './confirmation';
 import { useAuth } from './auth';
 import type { Account, Analysis, Dashboard, Page, Session, Transaction } from './types';
@@ -80,6 +82,7 @@ export function AccountsPage() {
       <button disabled={busy}>{busy?'Opening…':'Open account'}</button></form>{notice&&<p role="status" className="success">{notice}</p>}</section></div></>;
 }
 export function MoneyPage() {
+  const post=useSubmission();const beneficiaries=useResource<Beneficiary[]>('/beneficiaries');const [recipient,setRecipient]=useState('');
   const [operation,setOperation]=useState('deposit'),[revision,setRevision]=useState(0),[busy,setBusy]=useState(false),[error,setError]=useState(''),[result,setResult]=useState<Transaction>();
   const accounts=useResource<Account[]>('/accounts',revision);
   const active=(accounts.data||[]).filter(a=>a.status==='ACTIVE');
@@ -93,7 +96,7 @@ export function MoneyPage() {
     setBusy(true);
     try {
       const payload={amount,description:values.get('description'),...(operation==='transfer'?{senderAccountId:accountId,recipientAccountId}:{accountId})};
-      const response=await api.post<Transaction>('/transactions/'+operation,payload);setResult(response.data);setRevision(v=>v+1);
+      const response=await post<Transaction>('/transactions/'+operation,payload);setResult(response.data);setRevision(v=>v+1);
     }catch(e){setError(errorMessage(e));}finally{setBusy(false);}
   }
   return <><Heading eyebrow="MAKE YOUR NEXT MOVE" title="Move money"/><div className="two-column"><section className="panel">
@@ -103,12 +106,12 @@ export function MoneyPage() {
     {error&&<ErrorBox message={error}/>}
     {accounts.loading?<Loading/>:accounts.error?<ErrorBox message={accounts.error} retry={accounts.retry}/>:!active.length?<Empty>Create an active account before moving funds. <Link to="/accounts">Open account</Link></Empty>:<form onSubmit={submit} key={operation}>
       <label>{operation==='deposit'?'To account':'From account'}<select name="accountId" required>{active.map(a=><option key={a.id} value={a.id}>#{a.id} · {title(a.accountType)} · {money(a.balance,a.currency)}</option>)}</select></label>
-      {operation==='transfer'&&<label>Recipient account ID<input name="recipientAccountId" type="number" min="1" step="1" required placeholder="Ask the recipient for their account ID"/></label>}
+      {operation==='transfer'&&<><label>Saved beneficiary<select value={recipient} onChange={e=>setRecipient(e.target.value)}><option value="">Enter recipient ID manually</option>{beneficiaries.data?.map(b=><option key={b.id} value={b.accountId}>{b.friendlyName} · {b.accountNumber} · {b.currency}</option>)}</select></label>{beneficiaries.error&&<ErrorBox message={beneficiaries.error} retry={beneficiaries.retry}/>}<label>Recipient account ID<input value={recipient} onChange={e=>setRecipient(e.target.value)} name="recipientAccountId" type="number" min="1" step="1" required placeholder="Ask the recipient for their account ID"/></label></>}
       <label>Amount<input name="amount" type="text" inputMode="decimal" pattern="[0-9]{1,17}(\.[0-9]{1,2})?" required placeholder="0.00"/></label>
       <label>Description <span className="muted">(optional)</span><input name="description" maxLength={255} placeholder="What is this transaction for?"/></label>
       <button disabled={busy}>{busy?'Processing…':title(operation)+' funds'}</button></form>}
     {result&&<div role="status" aria-live="polite"><PersistedOutcome key={result.id+result.status} transaction={result}/><ConfirmationActions transaction={result} onUpdated={value=>{setResult(value);setRevision(v=>v+1);}}/><Link to={'/transactions/'+result.id}>View transaction & fraud analysis</Link></div>}
-    </section><section><div className="panel guidance"><p className="eyebrow">BUILT-IN CHECKS</p><h2>A decision you can understand.</h2><p>Outgoing transactions are checked for high amounts, rapid activity, unusual spending, repeated recipients, and low remaining balances.</p><p>Critical risk blocks the transaction before funds move. The attempted transaction and its reasons remain in your history.</p></div><h2>Current balances</h2>{accounts.data&&<AccountCards accounts={accounts.data}/>}</section></div></>;
+    </section><section><div className="panel guidance"><p className="eyebrow">BUILT-IN CHECKS</p><h2>A decision you can understand.</h2><p>Outgoing transactions are checked for high amounts, rapid activity, unusual spending, repeated recipients, and low remaining balances.</p><p>New critical attempts await administrator review without moving or reserving funds. Medium and high risk require your password confirmation. Every decision remains in your history.</p></div><h2>Current balances</h2>{accounts.data&&<AccountCards accounts={accounts.data}/>}</section></div></>;
 }
 export function HistoryPage({admin=false,suspicious=false}:{admin?:boolean;suspicious?:boolean}) {
   const [filters,setFilters]=useState(''),[page,setPage]=useState(0),[filterError,setFilterError]=useState('');
@@ -125,7 +128,7 @@ export function HistoryPage({admin=false,suspicious=false}:{admin?:boolean;suspi
     <p className="muted">{suspicious?'High and critical risk transactions, with decisions and explanations.':admin?'Monitor transactions across all customers.':'Includes incoming transfers and all activity on your accounts.'}</p>
     <form className="filters" onSubmit={apply} onReset={()=>{setFilters('');setPage(0);setFilterError('');}}>
       <label>Type<select name="type"><option value="">All types</option>{['DEPOSIT','WITHDRAWAL','TRANSFER'].map(v=><option key={v} value={v}>{title(v)}</option>)}</select></label>
-      <label>Status<select name="status"><option value="">All statuses</option>{['PENDING_CONFIRMATION','COMPLETED','BLOCKED','CANCELLED','EXPIRED','FAILED'].map(v=><option key={v} value={v}>{title(v)}</option>)}</select></label>
+      <label>Status<select name="status"><option value="">All statuses</option>{['PENDING_CONFIRMATION','AWAITING_REVIEW','COMPLETED','BLOCKED','REJECTED','CANCELLED','EXPIRED','FAILED'].map(v=><option key={v} value={v}>{title(v)}</option>)}</select></label>
       <label>Risk<select name="risk"><option value="">All levels</option>{(suspicious?['HIGH','CRITICAL']:['LOW','MEDIUM','HIGH','CRITICAL']).map(v=><option key={v} value={v}>{title(v)}</option>)}</select></label>
       <label>From (local time)<input name="from" type="datetime-local"/></label><label>To (local time)<input name="to" type="datetime-local"/></label><button>Apply filters</button><button type="reset" className="secondary">Clear</button>
     </form>{filterError&&<ErrorBox message={filterError}/>}
@@ -134,16 +137,17 @@ export function HistoryPage({admin=false,suspicious=false}:{admin?:boolean;suspi
 }
 export function DetailPage({admin=false}:{admin?:boolean}) {
   const {id}=useParams();
+  const [timelineRevision,setTimelineRevision]=useState(0);
   const prefix=admin?'/admin':'';
   const transaction=useResource<Transaction>(prefix+'/transactions/'+id);
   const analysis=useResource<Analysis>(prefix+'/transactions/'+id+'/fraud');
   const t=transaction.data;
   return <><Heading eyebrow="TRANSACTION EXPLORER" title={'Transaction #'+id}><Link className="button secondary" to={prefix+'/transactions'}>Back to history</Link></Heading>
     {transaction.loading?<Loading/>:transaction.error?<ErrorBox message={transaction.error} retry={transaction.retry}/>:t&&<section className="panel"><div className="split"><div><p className="eyebrow">{title(t.type)}</p><h2 className="amount">{money(t.amount,t.currency)}</h2></div><Badge value={t.status}/></div>
-      <OutcomeNotice transaction={t} analysis={analysis.data} loading={analysis.loading} error={analysis.error} retry={analysis.retry}/><ConfirmationActions transaction={t} onUpdated={()=>{transaction.retry();analysis.retry();}}/>{t.outcomeReason&&<p className="muted">{t.outcomeReason}</p>}
+      <OutcomeNotice transaction={t} analysis={analysis.data} loading={analysis.loading} error={analysis.error} retry={analysis.retry}/><ConfirmationActions transaction={t} onUpdated={()=>{transaction.retry();analysis.retry();setTimelineRevision(n=>n+1);}}/>{admin&&<ReviewActions transaction={t} onUpdated={()=>{transaction.retry();analysis.retry();setTimelineRevision(n=>n+1);}}/>}{t.outcomeReason&&<p className="muted">{t.outcomeReason}</p>}
       <dl className="detail-grid"><div><dt>From</dt><dd>{t.senderAccountId?'Account #'+t.senderAccountId:'External deposit'}</dd></div><div><dt>To</dt><dd>{t.recipientAccountId?'Account #'+t.recipientAccountId:'External withdrawal'}</dd></div><div><dt>Recorded</dt><dd>{timestamp(t.createdAt)}</dd></div><div><dt>Description</dt><dd>{t.description||'No description'}</dd></div></dl></section>}
     <section className="panel"><h2>Original fraud assessment</h2>{analysis.loading?<Loading/>:analysis.error?<ErrorBox message={analysis.error} retry={analysis.retry}/>:analysis.data&&<><div className="risk-summary"><div className="risk-score">{analysis.data.riskScore}<small>/100</small></div><div><Badge value={analysis.data.riskLevel}/><h3>{'Decision: '+title(analysis.data.decision)}</h3><p className="muted">{timestamp(analysis.data.createdAt)}</p></div></div><div className="score-track"><div style={{width:analysis.data.riskScore+'%'}}/></div>
-      <h3>Triggered rules</h3>{!analysis.data.rules.length?<Empty>No fraud rules were triggered.</Empty>:<div className="rule-list">{analysis.data.rules.map(rule=><article key={rule.ruleName}><div className="split"><strong>{title(rule.ruleName)}</strong><span>+{rule.scoreContribution} points</span></div><p>{rule.reason}</p><Badge value={rule.severity}/></article>)}</div>}<p className="muted">Scores: Low 0–29 · Medium 30–59 · High 60–79 · Critical 80–100. Critical outgoing transactions are blocked.</p></>}</section>{analysis.data?.confirmation&&<section className="panel"><h2>Confirmation-time assessment</h2><p>{timestamp(analysis.data.confirmation.createdAt)} ? {title(analysis.data.confirmation.decision)}</p><p>Risk: {title(analysis.data.confirmation.riskLevel)} ? Score: {analysis.data.confirmation.riskScore}/100</p>{analysis.data.confirmation.rules.length?<ul>{analysis.data.confirmation.rules.map((r,i)=><li key={i}>{r.reason} (+{r.scoreContribution})</li>)}</ul>:<p>No rules triggered during reassessment.</p>}</section>}</>;
+      <h3>Triggered rules</h3>{!analysis.data.rules.length?<Empty>No fraud rules were triggered.</Empty>:<div className="rule-list">{analysis.data.rules.map(rule=><article key={rule.ruleName}><div className="split"><strong>{title(rule.ruleName)}</strong><span>+{rule.scoreContribution} points</span></div><p>{rule.reason}</p><Badge value={rule.severity}/></article>)}</div>}<p className="muted">Scores: Low 0–29 · Medium 30–59 · High 60–79 · Critical 80–100. New critical attempts await admin review; a critical password reassessment remains blocked.</p></>}</section>{analysis.data?.confirmation&&<section className="panel"><h2>Confirmation-time assessment</h2><p>{timestamp(analysis.data.confirmation.createdAt)} · {title(analysis.data.confirmation.decision)}</p><p>Risk: {title(analysis.data.confirmation.riskLevel)} · Score: {analysis.data.confirmation.riskScore}/100</p>{analysis.data.confirmation.rules.length?<ul>{analysis.data.confirmation.rules.map((r,i)=><li key={i}>{r.reason} (+{r.scoreContribution})</li>)}</ul>:<p>No rules triggered during reassessment.</p>}</section>}{analysis.data?.review&&<section className="panel"><h2>Administrator reassessment</h2><p>{title(analysis.data.review.decision)} · {title(analysis.data.review.riskLevel)} · {analysis.data.review.riskScore}/100</p><p>{timestamp(analysis.data.review.createdAt)}</p><ul>{analysis.data.review.rules.map((r,i)=><li key={i}>{r.reason} (+{r.scoreContribution})</li>)}</ul></section>}{t&&<Timeline id={t.id} revision={timelineRevision}/>}</>;
 }
 function Chart({heading,values}:{heading:string;values:Record<string,number>}) {
   const maximum=Math.max(1,...Object.values(values));

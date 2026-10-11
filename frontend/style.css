@@ -16,3 +16,10 @@
 .outcome-error{font-size:.82rem;margin:10px 0}.outcome-error button{display:block;margin-top:8px;font-size:.78rem;padding:6px 10px}
 .outcome-cell{min-width:300px;max-width:400px;white-space:normal}.outcome-compact{margin:0;padding:13px;font-size:.8rem}.outcome-compact .outcome-badge{font-size:.8rem}
 .confirmation-panel{background:#f8fafc;border:1px solid #d6e0e8;border-radius:8px;padding:20px;margin:18px 0;white-space:normal}.confirmation-panel p{font-size:.9rem}.confirmation-panel input{max-width:420px}.confirmation-buttons{display:flex;gap:12px;flex-wrap:wrap}.outcome-neutral{background:#f2f4f7;border-color:#c9d3df;color:#405366}.badge.pending_confirmation{background:#fff4d9;color:#88651b}.badge.cancelled,.badge.expired{background:#edf1f5;color:#52677c}
+
+/* Subtle text-link treatment; navigation and button links retain their styling. */
+a:not(.button):not(.brand):not(nav a){color:#46718a;text-decoration:underline;text-decoration-color:#46718a40;text-underline-offset:3px;text-decoration-thickness:1px}
+a:not(.button):not(.brand):not(nav a):hover,a:not(.button):not(.brand):not(nav a):focus-visible{color:#285a78;text-decoration-color:currentColor}
+
+/* Extended workspace */
+.timeline-event{padding:1rem 0;border-bottom:1px solid #dce5e3;overflow-wrap:anywhere}.timeline-event small{display:block;color:#526862;margin:.4rem 0}.timeline-event button{margin:.5rem}.unread{border-left:3px solid #087f72;padding-left:1rem}.beneficiary-row{display:flex;align-items:center;gap:1rem;flex-wrap:wrap;padding:1rem 0;border-bottom:1px solid #dce5e3}.beneficiary-row label{flex:1}.session-agent{overflow-wrap:anywhere}.insight-month{margin:1.5rem 0}.insight-month .bar-track{margin:.5rem 0}.badge.awaiting_review{background:#fff1c7;color:#795000}.badge.rejected{background:#fde2e0;color:#9a2525}.sidebar{overflow-y:auto}.topbar{flex-wrap:wrap}

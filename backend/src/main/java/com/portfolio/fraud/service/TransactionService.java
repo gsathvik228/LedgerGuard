@@ -17,6 +17,8 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @Transactional(readOnly=true)
 public class TransactionService {
+    private final LedgerJournal journal;
+    @org.springframework.beans.factory.annotation.Value("${app.review.ttl-seconds:86400}") private long reviewSeconds=86400;
     private final AccountRepository accounts;
     private final TransactionRepository transactions;
     private final FraudAnalysisRepository analyses;
@@ -25,11 +27,12 @@ public class TransactionService {
     @org.springframework.beans.factory.annotation.Value("${app.confirmation.ttl-seconds:300}")
     private long confirmationSeconds=300;
 
-    public TransactionService(AccountRepository a, TransactionRepository t, FraudAnalysisRepository fa, FraudDetectionService f) {
+    public TransactionService(AccountRepository a, TransactionRepository t, FraudAnalysisRepository fa, FraudDetectionService f,LedgerJournal journal) {
+        this.journal=journal;
         accounts=a; transactions=t; analyses=fa; fraud=f;
     }
 
-    @Transactional
+    @Transactional(noRollbackFor=ApiException.class)
     public TransactionResponse transfer(User user, TransferRequest request) {
         if (request.senderAccountId().equals(request.recipientAccountId()))
             throw bad("SAME_ACCOUNT","Cannot transfer to the same account");
@@ -52,7 +55,7 @@ public class TransactionService {
         return response(tx,user);
     }
 
-    @Transactional
+    @Transactional(noRollbackFor=ApiException.class)
     public TransactionResponse withdrawal(User user, MoneyRequest request) {
         Account account=owned(user,request.accountId());
         requireActive(account); requireFunds(account,request.amount());
@@ -62,7 +65,7 @@ public class TransactionService {
         return response(tx,user);
     }
 
-    @Transactional
+    @Transactional(noRollbackFor=ApiException.class)
     public TransactionResponse deposit(User user, MoneyRequest request) {
         Account account=owned(user,request.accountId());
         requireActive(account);
@@ -74,13 +77,16 @@ public class TransactionService {
 
     private Transaction save(Account sender,Account recipient,User user,TransactionType type,BigDecimal amount,
                              FraudDetectionService.Result risk,String description) {
-        TransactionStatus status=risk.level()==RiskLevel.CRITICAL?TransactionStatus.BLOCKED:
+        TransactionStatus status=risk.level()==RiskLevel.CRITICAL?TransactionStatus.AWAITING_REVIEW:
             risk.level()==RiskLevel.LOW?TransactionStatus.COMPLETED:TransactionStatus.PENDING_CONFIRMATION;
         Transaction tx=transactions.save(new Transaction(sender,recipient,user,type,amount,status,risk.level(),risk.score(),description));
+        if(status==TransactionStatus.AWAITING_REVIEW) tx.awaitReview(Instant.now().plusSeconds(Math.max(1,reviewSeconds)));
         if (status==TransactionStatus.PENDING_CONFIRMATION) tx.awaitConfirmation(Instant.now().plusSeconds(Math.max(1,confirmationSeconds)));
-        FraudAnalysis analysis=new FraudAnalysis(tx,risk.score(),risk.level(),status==TransactionStatus.BLOCKED?"BLOCK":status==TransactionStatus.PENDING_CONFIRMATION?"CONFIRM":"APPROVE");
+        FraudAnalysis analysis=new FraudAnalysis(tx,risk.score(),risk.level(),status==TransactionStatus.AWAITING_REVIEW?"REVIEW":status==TransactionStatus.PENDING_CONFIRMATION?"CONFIRM":"APPROVE");
         risk.findings().forEach(f->analysis.add(new FraudRuleResult(f.rule(),f.reason(),f.severity(),f.points())));
         analyses.save(analysis);
+        journal.changed(user.getId(),"TRANSACTION_CREATED",tx,null,status==TransactionStatus.COMPLETED?"Transaction completed.":status==TransactionStatus.AWAITING_REVIEW?"Awaiting admin review. No funds moved or reserved.":"Password confirmation required. No funds moved or reserved.");
+        journal.audit(user.getId(),"FRAUD_DECISION",tx,null,"Original assessment: "+risk.level()+"; decision: "+analysis.getAction());
         return tx;
     }
 
@@ -124,7 +130,7 @@ public class TransactionService {
         var confirmation=analyses.findByTransactionIdAndPhase(id,"CONFIRMATION").map(a->new AssessmentResponse(a.getRiskScore(),a.getRiskLevel().name(),a.getAction(),a.getCreatedAt(),
             a.getRuleResults().stream().map(r->new RuleResponse(r.getRuleName(),r.getSeverity().name(),r.getReason(),r.getScoreContribution())).toList())).orElse(null);
         return new AnalysisResponse(analysis.getRiskScore(),analysis.getRiskLevel().name(),analysis.getAction(),analysis.getCreatedAt(),
-            analysis.getRuleResults().stream().map(r->new RuleResponse(r.getRuleName(),r.getSeverity().name(),r.getReason(),r.getScoreContribution())).toList(),confirmation);
+            analysis.getRuleResults().stream().map(r->new RuleResponse(r.getRuleName(),r.getSeverity().name(),r.getReason(),r.getScoreContribution())).toList(),confirmation,analyses.findByTransactionIdAndPhase(id,"REVIEW").map(a->new AssessmentResponse(a.getRiskScore(),a.getRiskLevel().name(),a.getAction(),a.getCreatedAt(),a.getRuleResults().stream().map(r->new RuleResponse(r.getRuleName(),r.getSeverity().name(),r.getReason(),r.getScoreContribution())).toList())).orElse(null));
     }
 
     private Account locked(Long id) {
@@ -149,6 +155,6 @@ public class TransactionService {
             tx.getRiskLevel().name(),tx.getRiskScore(),tx.getDescription(),tx.getCreatedAt(),
             tx.getSenderAccount()==null?null:tx.getSenderAccount().getId(),
             tx.getRecipientAccount()==null?null:tx.getRecipientAccount().getId(),account.getCurrency(),tx.getConfirmationExpiresAt(),tx.getResolvedAt(),tx.getOutcomeReason(),
-            viewer!=null && viewer.getId().equals(tx.getInitiatedBy().getId()) && tx.getStatus()==TransactionStatus.PENDING_CONFIRMATION && !tx.expired(Instant.now()));
+            viewer!=null && viewer.getId().equals(tx.getInitiatedBy().getId()) && tx.getStatus()==TransactionStatus.PENDING_CONFIRMATION && !tx.expired(Instant.now()),tx.getReviewExpiresAt(),viewer!=null && viewer.getId().equals(tx.getInitiatedBy().getId()) && (tx.getStatus()==TransactionStatus.PENDING_CONFIRMATION || tx.getStatus()==TransactionStatus.AWAITING_REVIEW) && !tx.expired(Instant.now()));
     }
 }

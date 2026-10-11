@@ -25,7 +25,7 @@ class TransactionServiceTest {
     @BeforeEach void setup() {
         accounts=mock(AccountRepository.class); transactions=mock(TransactionRepository.class);
         analyses=mock(FraudAnalysisRepository.class); fraud=mock(FraudDetectionService.class);
-        service=new TransactionService(accounts,transactions,analyses,fraud);
+        service=new TransactionService(accounts,transactions,analyses,fraud,mock(LedgerJournal.class));
         alice=user(1L);bob=user(2L);
         sender=account(20L,alice,"USD");recipient=account(10L,bob,"USD");
         when(accounts.findByIdForUpdate(20L)).thenReturn(Optional.of(sender));
@@ -55,12 +55,12 @@ class TransactionServiceTest {
     @Test void criticalTransferPersistsAnalysisWithoutMovingFunds() {
         var finding=new FraudDetectionService.Finding("HIGH_VALUE","High value",RiskLevel.HIGH,45);
         when(fraud.evaluate(any(),any(),any(),any())).thenReturn(new FraudDetectionService.Result(90,RiskLevel.CRITICAL,List.of(finding)));
-        assertThat(service.transfer(alice,transfer("900")).status()).isEqualTo("BLOCKED");
+        assertThat(service.transfer(alice,transfer("900")).status()).isEqualTo("AWAITING_REVIEW");
         assertThat(sender.getBalance()).isEqualByComparingTo("1000");
         assertThat(recipient.getBalance()).isEqualByComparingTo("1000");
         var capture=ArgumentCaptor.forClass(FraudAnalysis.class);
         verify(analyses).save(capture.capture());
-        assertThat(capture.getValue().getAction()).isEqualTo("BLOCK");
+        assertThat(capture.getValue().getAction()).isEqualTo("REVIEW");
         assertThat(capture.getValue().getRuleResults()).hasSize(1);
     }
     @Test void rejectsCrossCurrencyWithoutSavingOrChangingBalances() {

@@ -1,5 +1,7 @@
 spring:
   datasource:
+    hikari:
+      connection-init-sql: "SET time_zone = '+00:00'"
     url: ${DB_URL:jdbc:mysql://localhost:3306/${MYSQL_DATABASE:fraud_db}?serverTimezone=UTC}
     username: ${MYSQL_USER:fraud_app}
     password: ${MYSQL_PASSWORD}
@@ -28,3 +30,6 @@ app:
     max-failures: ${CONFIRMATION_MAX_FAILURES:5}
     attempt-window-seconds: ${CONFIRMATION_ATTEMPT_WINDOW_SECONDS:300}
     lock-seconds: ${CONFIRMATION_LOCK_SECONDS:60}
+
+  review:
+    ttl-seconds: ${REVIEW_TTL_SECONDS:86400}

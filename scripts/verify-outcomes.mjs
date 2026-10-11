@@ -1,7 +1,7 @@
 // Real API verification plus server-rendered checks of the shared outcome component.
 // Uses existing frontend dependencies; creates only new development records.
 import assert from 'node:assert/strict';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
@@ -21,7 +21,7 @@ const escape = text => text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/
 async function request(path, token, body) {
   const response = await fetch('http://127.0.0.1:8080/api'+path, {
     method: body ? 'POST':'GET',
-    headers: { 'Content-Type':'application/json', ...(token?{Authorization:'Bearer '+token}:{}) },
+    headers: { 'Content-Type':'application/json','Idempotency-Key':randomUUID(), ...(token?{Authorization:'Bearer '+token}:{}) },
     body: body ? JSON.stringify(body):undefined,
     signal: AbortSignal.timeout(15000)
   });
@@ -48,7 +48,7 @@ async function run() {
   await request('/transactions/withdraw',token,{accountId:sender.id,amount:'1.00'});
   const before=await balances();
   const blocked=await request('/transactions/transfer',token,{senderAccountId:sender.id,recipientAccountId:recipient.id,amount:'19500.00',description:'Blocked outcome verification'});
-  assert.equal(blocked.status,'BLOCKED');assert.equal(blocked.riskLevel,'CRITICAL');
+  assert.equal(blocked.status,'AWAITING_REVIEW');assert.equal(blocked.riskLevel,'CRITICAL');
   assert.deepEqual(await balances(),before);
   let high=await request('/transactions/transfer',token,{senderAccountId:sender.id,recipientAccountId:recipient.id,amount:'10000.00',description:'High-risk completed outcome verification'});
   assert.equal(high.status,'PENDING_CONFIRMATION');
@@ -61,19 +61,19 @@ async function run() {
     const analysis=await request('/transactions/'+transaction.id+'/fraud',token);
     assert.equal(detail.status,transaction.status);
     assert.ok(analysis.rules.length>0);
-    assert.equal(analysis.confirmation?.decision || analysis.decision,transaction.status==='BLOCKED'?'BLOCK':'APPROVE');
+    assert.equal(analysis.confirmation?.decision || analysis.decision,transaction.status==='AWAITING_REVIEW'?'REVIEW':'APPROVE');
     for(const compact of [false,true]) {
       const html=renderToStaticMarkup(React.createElement(OutcomeNotice,{transaction:detail,analysis,compact}));
-      assert.ok(html.includes(transaction.status==='BLOCKED'?'Blocked':'Suspicious activity detected'));
-      assert.ok(html.includes(transaction.status==='BLOCKED'?'All account balances remain unchanged by this attempt':'The amount was debited from the sender account and credited to the recipient account'));
+      assert.ok(html.includes(transaction.status==='AWAITING_REVIEW'?'Awaiting admin review':'Suspicious activity detected'));
+      assert.ok(html.includes(transaction.status==='AWAITING_REVIEW'?'No funds have moved or been reserved':'The amount was debited from the sender account and credited to the recipient account'));
       assert.ok(html.includes('not proof of fraud'));
-      assert.ok(html.includes('does not initiate a human review'));
+      assert.ok(html.includes('New critical attempts enter administrator review'));
       assert.ok(html.includes('Score: '+transaction.riskScore+'/100'));
       for(const rule of analysis.rules) assert.ok(html.includes(escape(rule.reason)),'Persisted reason missing from rendered outcome');
     }
     const loading=renderToStaticMarkup(React.createElement(OutcomeNotice,{transaction,loading:true}));
     assert.ok(loading.includes('Loading the recorded transaction analysis'));
-    assert.ok(loading.includes(transaction.status==='BLOCKED'?'The transaction was blocked before funds were transferred':'The transfer was completed'));
+    assert.ok(loading.includes(transaction.status==='AWAITING_REVIEW'?'Awaiting admin review.':'The transfer was completed'));
     const failed=renderToStaticMarkup(React.createElement(OutcomeNotice,{transaction,error:'Unavailable',retry:()=>{}}));
     assert.ok(failed.includes('The recorded analysis is temporarily unavailable'));
     assert.ok(failed.includes('Reload analysis'));
@@ -82,7 +82,7 @@ async function run() {
   }
   const history=await request('/transactions?size=20',token);
   for(const t of [flagged,high,blocked]) assert.ok(history.content.some(row=>row.id===t.id&&row.status===t.status&&row.riskLevel===t.riskLevel));
-  console.log('PASS History retains flagged and blocked outcomes');
+  console.log('PASS History retains flagged and review outcomes');
   const report={verifiedAt:new Date().toISOString(),flagged:{id:flagged.id,risk:flagged.riskLevel,score:flagged.riskScore},high:{id:high.id,risk:high.riskLevel,score:high.riskScore},blocked:{id:blocked.id,risk:blocked.riskLevel,score:blocked.riskScore}};
   writeFileSync(new URL('.local/outcome-verification.json',root),JSON.stringify(report,null,2));
 }
