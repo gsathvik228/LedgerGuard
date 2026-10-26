@@ -7,6 +7,11 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.slf4j.*;
 
+/**
+ * Discovers active plans within the rolling generation horizon. Each plan is queued
+ * in its own service transaction; failed generation rolls back and can be rediscovered.
+ * The scheduled-payment worker, not this generator, executes the resulting transfers.
+ */
 @Component
 public class RecurringPaymentWorker {
     private static final Logger log=LoggerFactory.getLogger(RecurringPaymentWorker.class);

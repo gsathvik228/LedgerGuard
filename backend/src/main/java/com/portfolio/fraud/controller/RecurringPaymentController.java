@@ -8,6 +8,11 @@ import java.util.List;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
+/**
+ * Authenticated recurring-plan endpoints. The service enforces ownership on every
+ * plan read and cancellation; occurrence responses expose the linked transaction's
+ * current outcome rather than treating a queued schedule as a completed payment.
+ */
 @RestController @RequestMapping("/api/recurring-payments")
 public class RecurringPaymentController {
     private final RecurringPaymentService plans;

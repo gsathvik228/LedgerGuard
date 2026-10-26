@@ -15,6 +15,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import static com.portfolio.fraud.service.Recurrence.Frequency;
 
+/**
+ * Persists finite recurring authorizations and materializes ordinary scheduled payments.
+ * This service never changes account balances: each occurrence is executed through
+ * ScheduledPaymentService and the existing transfer, fraud and ledger workflow.
+ */
 @Service
 public class RecurringPaymentService {
     public record Request(@NotNull @Positive Long senderAccountId,@NotNull @Positive Long recipientAccountId,
@@ -29,6 +34,7 @@ public class RecurringPaymentService {
     public RecurringPaymentService(JdbcTemplate db,AccountRepository accounts,ScheduledPaymentService schedules,ObjectMapper json,Clock clock,LedgerJournal journal){
         this.db=db;this.accounts=accounts;this.schedules=schedules;this.json=json;this.clock=clock;this.journal=journal;
     }
+    /** Serializes creation per owner so identical idempotency-key retries return one plan. */
     @Transactional
     public Plan create(User user,String key,Request request) {
         if(key==null||!key.matches("[A-Za-z0-9_-]{16,80}"))throw bad("Provide an Idempotency-Key of 16–80 letters, digits, hyphens or underscores.");
@@ -76,6 +82,10 @@ public class RecurringPaymentService {
         detail(user,id);page(page,size);
         return db.queryForList("SELECT id FROM scheduled_payments WHERE recurring_plan_id=? ORDER BY occurrence_index LIMIT ? OFFSET ?",Long.class,id,size,(long)page*size).stream().map(schedule->schedules.detail(user,schedule)).toList();
     }
+    /**
+     * Stops generation and cancels only unprocessed schedules. Processed transactions
+     * retain their independent confirmation, review, cancellation and completion states.
+     */
     @Transactional
     public Plan cancel(User user,Long id) {
         var rows=db.queryForList("SELECT status FROM recurring_payment_plans WHERE id=? AND user_id=? FOR UPDATE",id,user.getId());

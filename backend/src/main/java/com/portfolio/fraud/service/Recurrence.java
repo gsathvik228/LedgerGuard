@@ -2,7 +2,11 @@ package com.portfolio.fraud.service;
 
 import java.time.*;
 
-/** Each date derives from the original anchor; February never shifts March's day. */
+/**
+ * Calculates each occurrence from the original local date/time in the chosen zone.
+ * Month-end and leap-day clamping therefore do not shift later occurrences. Java's
+ * zone rules resolve daylight-saving gaps and overlaps before returning a UTC instant.
+ */
 public final class Recurrence {
     private Recurrence() {}
     public enum Frequency { DAILY, WEEKLY, MONTHLY, YEARLY }
