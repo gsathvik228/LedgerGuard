@@ -397,3 +397,68 @@ start-backend.ps1      Windows backend launcher
 LedgerGuard is intended for local development and portfolio review. Deposits and opening balances are simulated; no external funds are verified. Transfers require matching currencies, and the fraud engine does not normalize historical amounts across currencies. Admin volume metrics represent gross transaction activity, not account balances.
 
 Production use would require payment integration, deployment hardening, review of browser token storage (currently localStorage), login/registration abuse controls, operational monitoring, and broader browser/security testing. Audit events are append-only through the application; they are not tamper-proof against a database administrator. Idempotency and audit data currently have no retention purge. In-app notifications use polling, with no external delivery service. Local secrets, generated demo credentials, logs, dependencies, and build outputs are excluded from Git.
+
+## Scheduled payments
+
+One-time scheduled transfers are available from **Scheduled payments**. Creating a schedule is the user's initial authorization. LOW-risk transfers execute automatically when due, including after sign-out. MEDIUM/HIGH-risk transfers enter the existing password confirmation workflow; CRITICAL-risk transfers enter admin review. Passwords and JWTs are never saved with schedules. The existing confirmation/review expiry rules apply from processing time.
+
+Schedules reserve no funds. Account ownership, status, currency and available funds are rechecked at execution. Insufficient funds or incompatible/inactive accounts produce a terminal FAILED schedule; adding funds later does not retry it. Unexpected infrastructure errors roll back the whole attempt and are retried by the worker. Due schedules are processed in batches of up to 100, normally every five seconds. Overdue schedules are picked up after restart.
+
+The worker locks the schedule row before calling the existing transfer service. The resulting transaction, balance changes, ledger, fraud decision, audit records and schedule link commit together. A second worker or retry sees the committed outcome and cannot transfer again. Cancellation takes the same schedule lock: it succeeds before processing, or checks the resulting transaction after processing. A completed transfer cannot be cancelled. Pending password confirmation and admin review can be cancelled through the scheduled-payments page or transaction details.
+
+The API stores times as UTC instants. The form accepts and displays the browser's local timezone. A schedule's SCHEDULED/CANCELLED/FAILED state describes its lifecycle; PROCESSED means a linked transaction was created. The UI displays that transaction's current status.
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| POST | /api/scheduled-payments | Create; requires Idempotency-Key |
+| GET | /api/scheduled-payments?page=0&size=20 | Owned schedules; size 1–100 |
+| GET | /api/scheduled-payments/{id} | Owned schedule and current linked transaction |
+| POST | /api/scheduled-payments/{id}/cancel | Cancel unprocessed schedule or eligible pending transaction |
+
+Creation body: senderAccountId, recipientAccountId, amount (decimal string), optional description, executeAt (ISO-8601 instant). Reuse the same Idempotency-Key and body after a transport error. Reuse with different content returns 409. Scheduling does not require enough funds at creation. Recurrence and editing are outside this feature.
+
+### Run locally from the isolated worktree
+
+In PowerShell:
+
+    Set-Location C:\Users\user\.codex\worktrees\scheduled-payments\LedgerGuard
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\init-local-env.ps1
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-native-mysql.ps1
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\init-dev-admin.ps1
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\start-backend.ps1 -Dev
+
+The setup script prompts for a MySQL administrative password. If the application user already exists, set its existing password in the ignored .env first. Use a separate development database for review; do not point a second application at a database still used by an older backend. Flyway applies V4 automatically. The temporary test MySQL instance used during implementation is separate from the normal database on port 3306.
+
+In a second terminal:
+
+    Set-Location C:\Users\user\.codex\worktrees\scheduled-payments\LedgerGuard
+    npm.cmd ci --prefix frontend
+    npm.cmd run dev --prefix frontend
+
+Open http://127.0.0.1:5173. Register two customers and create USD accounts. Fund the sender through Move money. Schedule a small transfer one minute ahead, then verify one debit, one credit and one history record. Try cancellation before due time. Schedule another payment, stop the backend before it is due, and restart after its due time; verify it processes once.
+
+For repeatable fraud cases, use fresh sender accounts funded with USD 30,000 and default fraud settings:
+
+- LOW: schedule USD 10; it should complete automatically.
+- MEDIUM: schedule USD 10,000; it should require password confirmation with unchanged balances until confirmed.
+- HIGH: schedule USD 29,000; high value plus low remaining balance should require password confirmation.
+- CRITICAL: make three USD 1 withdrawals immediately before the USD 29,000 scheduled payment becomes due; it should enter admin review. Sign in as the development admin and approve or reject.
+- Insufficient funds: schedule from an account with no funds; it should fail when due. Funding it afterwards must not execute the failed payment.
+
+Keep the browser open when testing password confirmation; its default deadline is five minutes. Existing activity can change fraud scores. Verify pending cancellation, another user's denied access, notification/history links, sign-out/sign-in, and the page at a narrow viewport.
+
+### Automated verification
+
+    .\backend\mvnw.cmd test
+    npm.cmd run build --prefix frontend
+
+The MySQL tests are opt-in and otherwise skipped. Provision a dedicated database named ledgerguard_schedule_test and grant a test user access. The tests add disposable records; they do not truncate tables. In a temporary PowerShell terminal, set:
+
+    $env:SCHEDULE_TEST_DB_URL='jdbc:mysql://127.0.0.1:3306/ledgerguard_schedule_test?serverTimezone=UTC'
+    $env:SCHEDULE_TEST_DB_USER='your_test_user'
+    $env:SCHEDULE_TEST_DB_PASSWORD=Read-Host 'Test database password'
+    .\backend\mvnw.cmd test
+
+The database name is enforced by the test's enablement condition. Flyway initializes its schema. These tests cover simultaneous workers, concurrent creation retries, cancellation races, rollback followed by rediscovery, execution-time funds/status checks, password confirmation, admin review, login/JWT protection and transaction visibility. Rollback/rediscovery checks model loss of an uncommitted attempt; use the manual stop/restart check above for an actual process restart. Test passwords are fixed disposable fixture values and are stored only as BCrypt user hashes, never in schedules.
+
+Normal existing live checks remain available under scripts/verify-api.mjs, verify-confirmations.mjs, verify-outcomes.mjs and verify-workspace.mjs; see their prerequisites above. Worker polling may be configured with the Spring property app.scheduled-payments.poll-ms (default 5000); app.scheduled-payments.initial-delay-ms defaults to 0 and is extended only in database tests to allow deterministic execution.
