@@ -137,6 +137,21 @@ If `fraud_app` already exists, configure its current password in `.env` before r
 
 ### 3. Start the backend
 
+For one-click startup after the one-time setup, double-click **`start-app.cmd`** in the repository root. It starts the backend and Vite in hidden background processes, waits for both HTTP services, then opens http://127.0.0.1:5173 once. Repeated launches reuse healthy project servers instead of creating duplicates. If `.env.development` exists, the existing backend launcher is invoked with `-Dev`; otherwise normal configuration is used.
+
+Double-click **`stop-app.cmd`** to stop only server process groups created by this launcher. Servers started from another terminal are reused but are not adopted or stopped. MySQL, the browser, and unrelated Java/Node processes are left running. Ownership is checked using the supervisor PID, creation time and unique token; Windows Job Objects contain the owned server children. Stale tracking never authorizes stopping a reused PID. An occupied port belonging to an unrecognized process causes an error instead of terminating that process.
+
+Launcher tracking and logs are private, ignored files under `.local/launcher/`. On startup failure, check `backend.log`, `frontend.log`, or the corresponding `*-supervisor.log`. Newly started server groups are cleaned up on failure. The launcher does not install software, start MySQL, or alter system settings. Both `.cmd` files work regardless of the current directory, including repository paths containing spaces.
+
+For scripted startup without opening a browser:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\app-launcher.ps1 -Mode Start -NoBrowser
+.\stop-app.cmd
+```
+
+You can still run the servers in separate terminals as follows:
+
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\start-backend.ps1
 ```
@@ -270,6 +285,7 @@ All routes below use the `/api` prefix. Protected requests require an `Authoriza
 | GET | `/transactions` | List participating transactions |
 | GET | `/transactions/{id}` | View transaction details |
 | GET | `/transactions/{id}/fraud` | View the fraud decision and rules |
+| GET | `/admin/users` | ADMIN-only user directory: search, page, size; ID, name, email, role, registration date only |
 | GET | `/admin/dashboard` | Retrieve counts and volume by currency |
 | GET | `/admin/transactions` | Monitor all transactions |
 | GET | `/admin/fraud` | Monitor HIGH and CRITICAL transactions |
@@ -397,3 +413,9 @@ start-backend.ps1      Windows backend launcher
 LedgerGuard is intended for local development and portfolio review. Deposits and opening balances are simulated; no external funds are verified. Transfers require matching currencies, and the fraud engine does not normalize historical amounts across currencies. Admin volume metrics represent gross transaction activity, not account balances.
 
 Production use would require payment integration, deployment hardening, review of browser token storage (currently localStorage), login/registration abuse controls, operational monitoring, and broader browser/security testing. Audit events are append-only through the application; they are not tamper-proof against a database administrator. Idempotency and audit data currently have no retention purge. In-app notifications use polling, with no external delivery service. Local secrets, generated demo credentials, logs, dependencies, and build outputs are excluded from Git.
+
+### Admin user directory
+
+Open **Administration > Users** to browse real registered users. Search matches name/email substrings or an exact user ID/role; results are ordered by registration date and ID, newest first. Pagination defaults to 20 rows (maximum 100). The backend enforces ADMIN access and selects only `id`, `fullName`, `email`, `role`, and `createdAt`; password hashes, passwords, and session tokens are never part of the directory response.
+
+Run `node .\scripts\verify-users.mjs` against the development backend to check authorization, the five-field response contract, literal search handling, and server pagination using isolated development users.
