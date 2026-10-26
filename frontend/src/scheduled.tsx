@@ -6,10 +6,8 @@ import { Badge, Empty, ErrorBox, Loading, money, timestamp, useResource } from '
 import type { Account, Transaction } from './types';
 
 type Payment = { id:number; senderAccountId:number; recipientAccountId:number; amount:string; currency:string; description:string|null; executeAt:string; status:string; outcomeReason:string|null; transaction:Transaction|null; recurringPlanId:number|null; occurrenceIndex:number|null };
-type Beneficiary = { id:number; accountId:number; friendlyName:string; currency:string };
 export function ScheduledPaymentsPage() {
   const accounts=useResource<Account[]>('/accounts');
-  const beneficiaries=useResource<Beneficiary[]>('/beneficiaries');
   const [page,setPage]=useState(0),[revision,setRevision]=useState(0);
   const schedules=useResource<Payment[]>('/scheduled-payments?page='+page,revision);
   const [recipient,setRecipient]=useState('');
@@ -46,8 +44,6 @@ export function ScheduledPaymentsPage() {
       {accounts.loading?<Loading/>:accounts.error?<ErrorBox message={accounts.error} retry={accounts.retry}/>:!active.length?<Empty>Open an active account first.</Empty>:
       <form onSubmit={submit}>
         <label>From account<select name="senderAccountId" required disabled={busy}>{active.map(a=><option key={a.id} value={a.id}>#{a.id} · {money(a.balance,a.currency)}</option>)}</select></label>
-        <label>Saved beneficiary<select value={recipient} disabled={busy} onChange={e=>setRecipient(e.target.value)}><option value="">Enter recipient ID manually</option>{beneficiaries.data?.map(b=><option key={b.id} value={b.accountId}>{b.friendlyName} · {b.currency}</option>)}</select></label>
-        {beneficiaries.error&&<ErrorBox message={beneficiaries.error} retry={beneficiaries.retry}/>}
         <label>Recipient account ID<input type="number" min="1" step="1" value={recipient} onChange={e=>setRecipient(e.target.value)} required disabled={busy}/></label>
         <label>Amount<input name="amount" type="number" min="0.01" step="0.01" required disabled={busy}/></label>
         <label>Description<input name="description" maxLength={255} disabled={busy}/></label>

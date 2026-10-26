@@ -3,7 +3,7 @@ import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 import { api, errorMessage } from './api';
 import { OutcomeNotice } from './outcome';
 import { useSubmission } from './submission';
-import { ReviewActions, Timeline, type Beneficiary } from './workspace';
+import { ReviewActions, Timeline } from './workspace';
 import { ConfirmationActions } from './confirmation';
 import { useAuth } from './auth';
 import type { Account, Analysis, Dashboard, Page, Session, Transaction } from './types';
@@ -82,7 +82,7 @@ export function AccountsPage() {
       <button disabled={busy}>{busy?'Opening…':'Open account'}</button></form>{notice&&<p role="status" className="success">{notice}</p>}</section></div></>;
 }
 export function MoneyPage() {
-  const post=useSubmission();const beneficiaries=useResource<Beneficiary[]>('/beneficiaries');const [recipient,setRecipient]=useState('');
+  const post=useSubmission();const [recipient,setRecipient]=useState('');
   const [operation,setOperation]=useState('deposit'),[revision,setRevision]=useState(0),[busy,setBusy]=useState(false),[error,setError]=useState(''),[result,setResult]=useState<Transaction>();
   const accounts=useResource<Account[]>('/accounts',revision);
   const active=(accounts.data||[]).filter(a=>a.status==='ACTIVE');
@@ -106,7 +106,7 @@ export function MoneyPage() {
     {error&&<ErrorBox message={error}/>}
     {accounts.loading?<Loading/>:accounts.error?<ErrorBox message={accounts.error} retry={accounts.retry}/>:!active.length?<Empty>Create an active account before moving funds. <Link to="/accounts">Open account</Link></Empty>:<form onSubmit={submit} key={operation}>
       <label>{operation==='deposit'?'To account':'From account'}<select name="accountId" required>{active.map(a=><option key={a.id} value={a.id}>#{a.id} · {title(a.accountType)} · {money(a.balance,a.currency)}</option>)}</select></label>
-      {operation==='transfer'&&<><label>Saved beneficiary<select value={recipient} onChange={e=>setRecipient(e.target.value)}><option value="">Enter recipient ID manually</option>{beneficiaries.data?.map(b=><option key={b.id} value={b.accountId}>{b.friendlyName} · {b.accountNumber} · {b.currency}</option>)}</select></label>{beneficiaries.error&&<ErrorBox message={beneficiaries.error} retry={beneficiaries.retry}/>}<label>Recipient account ID<input value={recipient} onChange={e=>setRecipient(e.target.value)} name="recipientAccountId" type="number" min="1" step="1" required placeholder="Ask the recipient for their account ID"/></label></>}
+      {operation==='transfer'&&<><label>Recipient account ID<input value={recipient} onChange={e=>setRecipient(e.target.value)} name="recipientAccountId" type="number" min="1" step="1" required placeholder="Ask the recipient for their account ID"/></label></>}
       <label>Amount<input name="amount" type="text" inputMode="decimal" pattern="[0-9]{1,17}(\.[0-9]{1,2})?" required placeholder="0.00"/></label>
       <label>Description <span className="muted">(optional)</span><input name="description" maxLength={255} placeholder="What is this transaction for?"/></label>
       <button disabled={busy}>{busy?'Processing…':title(operation)+' funds'}</button></form>}

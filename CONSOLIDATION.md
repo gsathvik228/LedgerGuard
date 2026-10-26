@@ -26,6 +26,8 @@ The consolidated application lives in **`C:\Projects\Full-Stack\transaction-frau
 
 Bills/reminders and shared-expense Groups were not previously implemented in either copy or the fetched history. No working implementation of those features was removed; they are outside this recovery's implemented feature set.
 
+Subsequent UI update: Beneficiaries navigation, page and saved-recipient selectors have been removed throughout the frontend. Transfers and scheduled/recurring payment forms use direct recipient account IDs. Existing backend APIs and saved records remain available for compatibility; frontend pages no longer request them.
+
 ## Recurring payments
 
 Open **Recurring payments** (`/recurring-payments`). Choose an owned source, compatible destination, amount, first time, recurrence, IANA time zone, and **1–120 occurrences**, then review and authorize. No funds are reserved. Each generated occurrence appears under Scheduled Payments and has its own transaction outcome and confirmation/review requirements.

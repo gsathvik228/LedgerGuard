@@ -8,7 +8,6 @@ import type { Account, Transaction } from './types';
 type Plan={id:number;senderAccountId:number;recipientAccountId:number;amount:string;currency:string;description:string|null;firstExecuteAt:string;frequency:string;timeZone:string;occurrenceCount:number;generatedCount:number;nextUnqueuedAt:string|null;status:string};
 type Occurrence={id:number;executeAt:string;amount:string;currency:string;status:string;outcomeReason:string|null;transaction:Transaction|null;occurrenceIndex:number};
 type Input={senderAccountId:number;recipientAccountId:number;amount:string;description:string;firstExecuteAt:string;frequency:string;timeZone:string;occurrenceCount:number};
-type Beneficiary={id:number;accountId:number;friendlyName:string;currency:string};
 
 function Occurrences({id,revision}:{id:number;revision:number}) {
   const [page,setPage]=useState(0);const r=useResource<Occurrence[]>('/recurring-payments/'+id+'/occurrences?page='+page,revision);
@@ -19,7 +18,7 @@ function Occurrences({id,revision}:{id:number;revision:number}) {
 }
 
 export function RecurringPaymentsPage(){
-  const accounts=useResource<Account[]>('/accounts'),beneficiaries=useResource<Beneficiary[]>('/beneficiaries');
+  const accounts=useResource<Account[]>('/accounts');
   const [page,setPage]=useState(0),[revision,setRevision]=useState(0),[selected,setSelected]=useState<number>();
   const plans=useResource<Plan[]>('/recurring-payments?page='+page,revision);
   const [recipient,setRecipient]=useState(''),[review,setReview]=useState<Input>(),[cancelId,setCancelId]=useState<number>();
@@ -49,7 +48,6 @@ export function RecurringPaymentsPage(){
       {accounts.loading?<Loading/>:accounts.error?<ErrorBox message={accounts.error} retry={accounts.retry}/>:!active.length?<Empty>Open an active account first.</Empty>:
       <form className="request-form" onSubmit={preview}><fieldset disabled={busy||!!review}><div className="filters">
         <label>Your paying account<select name="senderAccountId" required>{active.map(a=><option key={a.id} value={a.id}>{a.accountNumber} · {a.currency}</option>)}</select></label>
-        <label>Saved beneficiary<select value={recipient} onChange={e=>setRecipient(e.target.value)}><option value="">Enter account ID</option>{beneficiaries.data?.map(b=><option key={b.id} value={b.accountId}>{b.friendlyName} · {b.currency}</option>)}</select></label>
         <label>Recipient account ID<input type="number" min="1" step="1" required value={recipient} onChange={e=>setRecipient(e.target.value)}/></label>
         <label>Amount per occurrence<input name="amount" type="number" min="0.01" step="0.01" required/></label>
         <label>Description<input name="description" maxLength={255}/></label>
@@ -58,7 +56,7 @@ export function RecurringPaymentsPage(){
         <label>Recurrence time zone<input name="timeZone" required maxLength={80} defaultValue={Intl.DateTimeFormat().resolvedOptions().timeZone}/></label>
         <label>Number of occurrences (1–120)<input name="occurrenceCount" type="number" min="1" max="120" step="1" defaultValue={12} required/></label>
       </div><p className="muted">Currency follows your paying account. All occurrences must be before 2038. At most 45 days of occurrences are queued ahead; the total authorization is limited to the count above.</p><button disabled={busy}>Review recurring authorization</button></fieldset></form>}
-      {beneficiaries.error&&<ErrorBox message={beneficiaries.error} retry={beneficiaries.retry}/>}
+
       {review&&<section className="confirmation-panel" aria-label="Review recurring authorization"><h3>Confirm recurring plan</h3><p>Send {money(review.amount,active.find(a=>a.id===review.senderAccountId)?.currency||'')} from account #{review.senderAccountId} to account #{review.recipientAccountId}, {title(review.frequency)}, for {review.occurrenceCount} occurrences.</p><p>First execution: {timestamp(review.firstExecuteAt)}. Recurrence zone: {review.timeZone}. This authorizes future transfer attempts after sign-out. Funds and fraud checks still apply to every occurrence.</p><div className="confirmation-buttons"><button disabled={busy} onClick={create}>{busy?'Saving…':'Authorize recurring plan'}</button><button className="secondary" disabled={busy} onClick={()=>setReview(undefined)}>Back</button></div></section>}
     </section>
     <section className="panel"><h2>Your recurring plans</h2>{plans.loading?<Loading/>:plans.error?<ErrorBox message={plans.error} retry={plans.retry}/>:!plans.data?.length?<Empty>No recurring plans on this page.</Empty>:plans.data.map(p=><article className="timeline-event" key={p.id}><div className="split"><strong>Plan #{p.id}: {money(p.amount,p.currency)} · {title(p.frequency)}</strong><Badge value={p.status}/></div><p>Account #{p.senderAccountId} → #{p.recipientAccountId}. {p.description}</p><small>First execution {timestamp(p.firstExecuteAt)} · {p.timeZone} · {p.generatedCount} of {p.occurrenceCount} occurrences queued</small>{p.nextUnqueuedAt&&<small>Next date not yet queued: {timestamp(p.nextUnqueuedAt)}</small>}<div className="confirmation-buttons"><button className="secondary" disabled={busy} onClick={()=>setSelected(p.id)}>View occurrence history</button>{p.status==='ACTIVE'&&<button className="secondary" disabled={busy} onClick={()=>setCancelId(p.id)}>Cancel plan</button>}</div></article>)}

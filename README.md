@@ -20,7 +20,6 @@ The project demonstrates idempotent payments, password-confirmed authorization, 
 | Administration | Metrics, monitoring, critical review queue, reasoned approval/rejection, and filtered audit trail |
 | Payment reliability | User/operation-scoped idempotency keys, deterministic locks, and atomic ledger/audit/notification writes |
 | Notifications | Private in-app updates, unread counts, mark-as-read, and transaction links |
-| Beneficiaries | Save external account numbers, rename/remove destinations, and select them in transfers |
 | Statements | Owned-account CSV/PDF downloads with verified opening/closing balances and UTC date ranges |
 | Insights | Monthly completed inflows/outflows/net by account and currency, excluding own-account transfers from user summaries |
 | Scheduled payments | Durable one-time transfers, execution-time fraud checks, cancellation and linked transaction outcomes |
@@ -385,7 +384,7 @@ Verification creates isolated development accounts and transactions; it never re
 3. Within five minutes, attempt another transfer of USD 29,000. With default thresholds, high value (+45), rapid activity (+25), and balance risk (+20) produce a **90/100 CRITICAL** score. The attempt is recorded as **AWAITING_REVIEW**, and neither balance changes.
 4. Open its transaction details to inspect the decision and triggered rules.
 5. Sign in as the development admin, open **Review queue**, inspect the reasons and timeline, then approve with an explicit reason or reject. Approval moves funds once; rejection leaves balances unchanged.
-6. Sign in as the recipient, follow the incoming-transfer notification, and mark it read. Save the other account as a beneficiary for a future transfer.
+6. Sign in as the recipient, follow the incoming-transfer notification, and mark it read. Transfers and payment schedules accept the recipient's account ID directly.
 7. Open **Statements** for today to reconcile completed movements; download CSV/PDF. Open **Insights** to compare inflows/outflows by currency.
 8. Open **Security settings**, revoke another session, then change the password and verify that a fresh sign-in is required.
 
