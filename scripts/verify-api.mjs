@@ -1,7 +1,7 @@
 // Native Node.js API verification. Creates new development records; never deletes data.
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID, createHmac } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const root=fileURLToPath(new URL('../',import.meta.url));
@@ -14,6 +14,8 @@ const customers=[
 ];
 const checks=[];
 function envFile(name) {
+  if(name==='.env'&&existsSync(root+'.local/runtime.env'))name='.local/runtime.env';
+  if(name==='.env.development'&&existsSync(root+'.local/runtime-dev.env'))name='.local/runtime-dev.env';
   return Object.fromEntries(readFileSync(root+name,'utf8').replace(/^\uFEFF/,'').split(/\r?\n/).filter(l=>l.trim()&&!l.trim().startsWith('#')).map(l=>{
     const i=l.indexOf('=');let value=l.slice(i+1).trim();
     if((value.startsWith('"')&&value.endsWith('"'))||(value.startsWith("'")&&value.endsWith("'")))value=value.slice(1,-1);

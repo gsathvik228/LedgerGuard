@@ -49,12 +49,14 @@ if ($Mode -eq 'Worker') {
     $log = Join-Path $stateRoot "$Service.log"
     if ($Service -eq 'backend') {
         # Keep private configuration loading in the existing launcher.
-        if (Test-Path -LiteralPath (Join-Path $appRoot '.env.development')) {
+        if ((Test-Path -LiteralPath (Join-Path $appRoot '.env.development')) -or (Test-Path -LiteralPath (Join-Path $appRoot '.local\runtime-dev.env'))) {
             & (Join-Path $appRoot 'start-backend.ps1') -Dev *> $log
         } else { & (Join-Path $appRoot 'start-backend.ps1') *> $log }
     } else {
         Set-Location -LiteralPath (Join-Path $appRoot 'frontend')
         # Use the installed Vite executable directly, with its existing config.
+        # Vite otherwise treats closed stdin in a hidden worker as a shutdown signal.
+        $env:CI = 'true'
         & node.exe (Join-Path $appRoot 'frontend\node_modules\vite\bin\vite.js') *> $log
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
@@ -182,7 +184,7 @@ try {
                 if ($env:JAVA_HOME) {
                     if (!(Test-Path -LiteralPath (Join-Path $env:JAVA_HOME 'bin\java.exe'))) { throw 'JAVA_HOME does not contain bin\java.exe. Correct it in this terminal, then retry.' }
                 } else { Get-Command java.exe -ErrorAction Stop | Out-Null }
-                $dev = Test-Path -LiteralPath (Join-Path $appRoot '.env.development')
+                $dev = (Test-Path -LiteralPath (Join-Path $appRoot '.env.development')) -or (Test-Path -LiteralPath (Join-Path $appRoot '.local\runtime-dev.env'))
                 & (Join-Path $appRoot 'start-backend.ps1') -CheckConfig -Dev:$dev
             }
             if ($serviceName -eq 'frontend') {

@@ -2,7 +2,7 @@
 // For a quick expiry check, start the backend with CONFIRMATION_TTL_SECONDS=20.
 import assert from 'node:assert/strict';
 import {randomBytes,randomUUID} from 'node:crypto';
-import {readFileSync,writeFileSync,mkdirSync} from 'node:fs';
+import {readFileSync,writeFileSync,mkdirSync,existsSync} from 'node:fs';
 const root=new URL('../',import.meta.url);
 const base='http://127.0.0.1:8080/api';
 const stamp=Date.now();
@@ -38,7 +38,7 @@ async function run() {
     assert.equal(original.decision,'CONFIRM');assert.equal(original.confirmation,null);
     pass('LOW processes normally; MEDIUM is pending with original assessment and unchanged balances');
     await confirm(recipient,t,recipient.password,403);await cancel(recipient,t,403);
-    const dev=Object.fromEntries(readFileSync(new URL('.env.development',root),'utf8').replace(/^\uFEFF/,'').split(/\r?\n/).filter(l=>l.includes('=')).map(l=>{const i=l.indexOf('=');return [l.slice(0,i),l.slice(i+1)];}));
+    const dev=Object.fromEntries(readFileSync(new URL(existsSync(new URL('.local/runtime-dev.env',root))?'.local/runtime-dev.env':'.env.development',root),'utf8').replace(/^\uFEFF/,'').split(/\r?\n/).filter(l=>l.includes('=')).map(l=>{const i=l.indexOf('=');return [l.slice(0,i),l.slice(i+1)];}));
     const admin=await request('/auth/login',null,{email:dev.DEV_ADMIN_EMAIL,password:dev.DEV_ADMIN_PASSWORD});
     await request('/transactions/'+t.id+'/confirm',admin.token,{password:dev.DEV_ADMIN_PASSWORD},403);
     await request('/transactions/'+t.id+'/cancel',admin.token,{},403);

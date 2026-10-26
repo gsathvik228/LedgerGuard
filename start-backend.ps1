@@ -1,10 +1,20 @@
-param([switch]$CheckConfig, [switch]$Dev)
+param([switch]$CheckConfig, [switch]$Dev, [string]$EnvFile)
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'scripts\local-env.ps1')
-$values = Read-LocalEnv (Join-Path $PSScriptRoot '.env')
+if ([string]::IsNullOrWhiteSpace($EnvFile)) {
+    # An ignored runtime copy lets consolidation preserve both original secret files.
+    $runtimeFile = Join-Path $PSScriptRoot '.local\runtime.env'
+    $EnvFile = if (Test-Path -LiteralPath $runtimeFile) { $runtimeFile } else { Join-Path $PSScriptRoot '.env' }
+} elseif (-not [IO.Path]::IsPathRooted($EnvFile)) {
+    $EnvFile = Join-Path $PSScriptRoot $EnvFile
+}
+if (-not (Test-Path -LiteralPath $EnvFile)) { throw 'Configuration file not found. Run scripts\init-local-env.ps1 or supply -EnvFile.' }
+$values = Read-LocalEnv $EnvFile
 if ($Dev) {
-    $devValues = Read-LocalEnv (Join-Path $PSScriptRoot '.env.development')
+    $runtimeDev = Join-Path $PSScriptRoot '.local\runtime-dev.env'
+    $devFile = if (Test-Path -LiteralPath $runtimeDev) { $runtimeDev } else { Join-Path $PSScriptRoot '.env.development' }
+    $devValues = Read-LocalEnv $devFile
     foreach ($name in $devValues.Keys) { $values[$name] = $devValues[$name] }
     $values['SPRING_PROFILES_ACTIVE'] = 'dev'
 }

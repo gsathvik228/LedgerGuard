@@ -1,5 +1,7 @@
 # LedgerGuard
 
+For the recovered Scheduled Payments, integrated Payment Requests, recurring plans, database reconciliation, and current run/test instructions, see [the consolidation report](CONSOLIDATION.md).
+
 **Transaction processing with explainable, rule-based fraud detection.**
 
 LedgerGuard is a full-stack portfolio application for managing accounts, transferring funds, and reviewing suspicious activity. Customers can track their balances and transaction history, while administrators can monitor activity across the ledger and inspect the reasons behind each fraud decision.
@@ -21,6 +23,11 @@ The project demonstrates idempotent payments, password-confirmed authorization, 
 | Beneficiaries | Save external account numbers, rename/remove destinations, and select them in transfers |
 | Statements | Owned-account CSV/PDF downloads with verified opening/closing balances and UTC date ranges |
 | Insights | Monthly completed inflows/outflows/net by account and currency, excluding own-account transfers from user summaries |
+| Scheduled payments | Durable one-time transfers, execution-time fraud checks, cancellation and linked transaction outcomes |
+| Recurring payments | Finite daily/weekly/monthly/yearly plans, timezone-aware dates, persistent occurrence history and cancellation |
+| Payment requests | Private requests between registered customers, protected payment, decline/cancel, expiry and attempt history |
+| Admin users | Searchable, paginated registered-user directory with an allowlisted response |
+| Windows launcher | One-click native startup/shutdown with owned-process tracking and private logs |
 
 ## Architecture
 
@@ -419,3 +426,123 @@ Production use would require payment integration, deployment hardening, review o
 Open **Administration > Users** to browse real registered users. Search matches name/email substrings or an exact user ID/role; results are ordered by registration date and ID, newest first. Pagination defaults to 20 rows (maximum 100). The backend enforces ADMIN access and selects only `id`, `fullName`, `email`, `role`, and `createdAt`; password hashes, passwords, and session tokens are never part of the directory response.
 
 Run `node .\scripts\verify-users.mjs` against the development backend to check authorization, the five-field response contract, literal search handling, and server pagination using isolated development users.
+
+## Scheduled payments
+
+One-time scheduled transfers are available from **Scheduled payments**. Creating a schedule is the user's initial authorization. LOW-risk transfers execute automatically when due, including after sign-out. MEDIUM/HIGH-risk transfers enter the existing password confirmation workflow; CRITICAL-risk transfers enter admin review. Passwords and JWTs are never saved with schedules. The existing confirmation/review expiry rules apply from processing time.
+
+Schedules reserve no funds. Account ownership, status, currency and available funds are rechecked at execution. Insufficient funds or incompatible/inactive accounts produce a terminal FAILED schedule; adding funds later does not retry it. Unexpected infrastructure errors roll back the whole attempt and are retried by the worker. Due schedules are processed in batches of up to 100, normally every five seconds. Overdue schedules are picked up after restart.
+
+The worker locks the schedule row before calling the existing transfer service. The resulting transaction, balance changes, ledger, fraud decision, audit records and schedule link commit together. A second worker or retry sees the committed outcome and cannot transfer again. Cancellation takes the same schedule lock: it succeeds before processing, or checks the resulting transaction after processing. A completed transfer cannot be cancelled. Pending password confirmation and admin review can be cancelled through the scheduled-payments page or transaction details.
+
+The API stores times as UTC instants. The form accepts and displays the browser's local timezone. A schedule's SCHEDULED/CANCELLED/FAILED state describes its lifecycle; PROCESSED means a linked transaction was created. The UI displays that transaction's current status.
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| POST | /api/scheduled-payments | Create; requires Idempotency-Key |
+| GET | /api/scheduled-payments?page=0&size=20 | Owned schedules; size 1–100 |
+| GET | /api/scheduled-payments/{id} | Owned schedule and current linked transaction |
+| POST | /api/scheduled-payments/{id}/cancel | Cancel unprocessed schedule or eligible pending transaction |
+
+Creation body: senderAccountId, recipientAccountId, amount (decimal string), optional description, executeAt (ISO-8601 instant). Reuse the same Idempotency-Key and body after a transport error. Reuse with different content returns 409. Scheduling does not require enough funds at creation. Recurrence and editing are outside this feature.
+
+### Run locally from the isolated worktree
+
+In PowerShell:
+
+    Set-Location C:\Users\user\.codex\worktrees\scheduled-payments\LedgerGuard
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\init-local-env.ps1
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-native-mysql.ps1
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\init-dev-admin.ps1
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\start-backend.ps1 -Dev
+
+The setup script prompts for a MySQL administrative password. If the application user already exists, set its existing password in the ignored .env first. Use a separate development database for review; do not point a second application at a database still used by an older backend. Flyway applies V4 automatically. The temporary test MySQL instance used during implementation is separate from the normal database on port 3306.
+
+In a second terminal:
+
+    Set-Location C:\Users\user\.codex\worktrees\scheduled-payments\LedgerGuard
+    npm.cmd ci --prefix frontend
+    npm.cmd run dev --prefix frontend
+
+Open http://127.0.0.1:5173. Register two customers and create USD accounts. Fund the sender through Move money. Schedule a small transfer one minute ahead, then verify one debit, one credit and one history record. Try cancellation before due time. Schedule another payment, stop the backend before it is due, and restart after its due time; verify it processes once.
+
+For repeatable fraud cases, use fresh sender accounts funded with USD 30,000 and default fraud settings:
+
+- LOW: schedule USD 10; it should complete automatically.
+- MEDIUM: schedule USD 10,000; it should require password confirmation with unchanged balances until confirmed.
+- HIGH: schedule USD 29,000; high value plus low remaining balance should require password confirmation.
+- CRITICAL: make three USD 1 withdrawals immediately before the USD 29,000 scheduled payment becomes due; it should enter admin review. Sign in as the development admin and approve or reject.
+- Insufficient funds: schedule from an account with no funds; it should fail when due. Funding it afterwards must not execute the failed payment.
+
+Keep the browser open when testing password confirmation; its default deadline is five minutes. Existing activity can change fraud scores. Verify pending cancellation, another user's denied access, notification/history links, sign-out/sign-in, and the page at a narrow viewport.
+
+### Automated verification
+
+    .\backend\mvnw.cmd test
+    npm.cmd run build --prefix frontend
+
+The MySQL tests are opt-in and otherwise skipped. Provision a dedicated database named ledgerguard_schedule_test and grant a test user access. The tests add disposable records; they do not truncate tables. In a temporary PowerShell terminal, set:
+
+    $env:SCHEDULE_TEST_DB_URL='jdbc:mysql://127.0.0.1:3306/ledgerguard_schedule_test?serverTimezone=UTC'
+    $env:SCHEDULE_TEST_DB_USER='your_test_user'
+    $env:SCHEDULE_TEST_DB_PASSWORD=Read-Host 'Test database password'
+    .\backend\mvnw.cmd test
+
+The database name is enforced by the test's enablement condition. Flyway initializes its schema. These tests cover simultaneous workers, concurrent creation retries, cancellation races, rollback followed by rediscovery, execution-time funds/status checks, password confirmation, admin review, login/JWT protection and transaction visibility. Rollback/rediscovery checks model loss of an uncommitted attempt; use the manual stop/restart check above for an actual process restart. Test passwords are fixed disposable fixture values and are stored only as BCrypt user hashes, never in schedules.
+
+Normal existing live checks remain available under scripts/verify-api.mjs, verify-confirmations.mjs, verify-outcomes.mjs and verify-workspace.mjs; see their prerequisites above. Worker polling may be configured with the Spring property app.scheduled-payments.poll-ms (default 5000); app.scheduled-payments.initial-delay-ms defaults to 0 and is extended only in database tests to allow deterministic execution.
+
+## Payment requests
+
+
+The authenticated **Payment requests** workspace is available at `/payment-requests`, with details at `/payment-requests/:id`. A customer selects an active owned receiving account, identifies another registered customer by exact email, and enters an amount, purpose, and optional expiry. Currency comes from the receiving account. Only the two participants can read a request; administrators have no additional request visibility. Only its recipient can pay or decline, and only its creator can cancel a pending request.
+
+| Method | API route | Behaviour |
+| --- | --- | --- |
+| POST | `/api/payment-requests` | Create with `recipientEmail`, `receivingAccountId`, decimal `amount`, `description`, optional ISO instant `expiresAt`; returns the request view |
+| GET | `/api/payment-requests` | `direction=sent\|received` (default received), optional `status`, zero-based `page`, `size=1..100`; returns the existing paginated response shape |
+| GET | `/api/payment-requests/{id}` | Returns `{request, attempts}`; attempts include transaction ID, authoritative transaction status and creation instant |
+| POST | `/api/payment-requests/{id}/pay` | Body `{ "senderAccountId": 123 }`; requires `Idempotency-Key`; returns the existing transaction response |
+| POST | `/api/payment-requests/{id}/decline` | Recipient declines a pending request |
+| POST | `/api/payment-requests/{id}/cancel` | Creator cancels a pending request |
+
+Money uses `BigDecimal` / `DECIMAL(19,2)` and the existing decimal-string response serializer. Request responses contain participant names and action eligibility flags; they do not expose another customer's balance or account directory. Details retain links to all payment attempts.
+
+Request transitions:
+
+- `PENDING` can become `DECLINED`, `CANCELLED`, or `EXPIRED`, or initiate a transfer.
+- An immediately `COMPLETED` transfer makes the request `PAID`. `PENDING_CONFIRMATION` and `AWAITING_REVIEW` transfers leave it `PAYMENT_PENDING`; the existing transaction page provides password confirmation, cancellation, fraud explanations, and administrator-review visibility.
+- A synchronous transaction-state event updates the request inside the same transaction as confirmation, review, cancellation, or scheduled authorization expiry. Later `COMPLETED` means `PAID`; `BLOCKED`, `FAILED`, `REJECTED`, `CANCELLED`, or `EXPIRED` means `PENDING` again, or `EXPIRED` if the request's own deadline has passed. Each attempt remains in history.
+- A transfer initiated while the request is eligible retains its own confirmation/review deadline even if the request deadline subsequently passes. A successful transfer is still recorded as paid. A request cannot be declined, cancelled, or paid again while a transfer is pending. Cancel the underlying transfer first if appropriate.
+- `PAID`, `DECLINED`, `CANCELLED`, and `EXPIRED` are terminal request states. Reads and status filters enforce expiry immediately, even before the expiry worker materializes it.
+
+Payment execution uses the existing `IdempotencyService` (operation scoped to the request ID) and `TransactionService.transfer`. It retains deterministic account locks, ownership, currency, status, funds and fraud checks, ledger movements, and financial audit events. A pessimistic request lock serializes competing payments and decisions. Identical-key retries replay the original transaction response; fetch transaction details for the current status. New-key retries while pending or paid receive HTTP 409. Request expiry runs automatically every five seconds; configure `app.payment-requests.expiry-delay-ms` to change the delay. Request deadlines use UTC instants and an injectable `Clock`; the UI accepts and displays local times.
+
+The additive `V5__payment_requests.sql` migration adds `payment_requests`, `payment_request_attempts`, foreign keys, indexes, amount/state checks, and optimistic versions. Notifications retain existing transaction references while adding nullable typed resource references with a unique deduplication key. Application-controlled routes resolve notification links. Creation, payment initiation, decisions, expiry and lifecycle resolution write audit records. Request creation and resolution generate private in-app notifications.
+
+Verification added:
+
+```powershell
+# All existing tests plus payment-request service/lifecycle tests (MySQL tests skip without opt-in)
+.\backend\mvnw.cmd clean verify
+npm.cmd ci --prefix frontend
+npm.cmd run build --prefix frontend
+
+# Real migrations, Hibernate validation, locks, rollback, API ownership and financial lifecycle tests.
+# Provision ONLY a dedicated ledgerguard_payment_test database, then set its credentials:
+$env:PAYMENT_TEST_DB_URL = 'jdbc:mysql://127.0.0.1:3306/ledgerguard_payment_test?serverTimezone=UTC'
+$env:PAYMENT_TEST_DB_USER = 'your_test_user'
+$env:PAYMENT_TEST_DB_PASSWORD = 'your_test_password'
+.\backend\mvnw.cmd clean verify
+```
+
+The MySQL suite is opt-in and accepts only the dedicated database name above. It creates isolated users and records without deleting existing data. Tests cover all transaction outcome mappings, real concurrent same-key and different-key payments, payment/decline races, confirmation, critical reassessment, admin review, cancellation, expiry, failed funds checks, currency/ownership rejection, rollback, private notifications, and preserved retry history. A temporary separate MySQL 8.4 instance was used for local verification; the application database was not used.
+
+Verification on **2026-10-26** passed: Maven Wrapper `clean verify` with **74 tests, zero failures/errors/skips**, including **14 real-MySQL integration tests**, Flyway migration execution, Hibernate validation, and executable JAR packaging; frontend `npm ci` and TypeScript/Vite production build; and the existing `node scripts/verify-outcomes.mjs` checks against a temporary running API (MEDIUM/HIGH completion, CRITICAL review, warning rendering, and history). The remaining live API/workspace/confirmation scripts were not run; they require their separate development admin configuration and, in the API verifier, a running Vite frontend. The temporary verification API and MySQL processes were stopped after checking.
+
+Manual payment-request demonstration:
+
+1. Register two customers and give each an account in the same currency. Fund the payer through the simulated deposit workflow.
+2. As the requester, open Payment requests and send a request to the payer's registered email, selecting your receiving account.
+3. As the payer, follow the in-app notification, select an owned account, review the amount and recipient, and confirm the transfer. Inspect the linked transaction for any fraud warning and complete password confirmation or administrator review when required.
+4. Return to the request: it becomes paid only after transaction completion. For a separate request, cancel a pending transaction and inspect both the reopened request and retained attempt history; also try decline, creator cancellation, and request expiry.

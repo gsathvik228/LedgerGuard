@@ -1,4 +1,7 @@
-param([string]$MySqlExe = 'C:\Program Files\MySQL\MySQL Server 8.4\bin\mysql.exe')
+param(
+    [string]$MySqlExe = 'C:\Program Files\MySQL\MySQL Server 8.4\bin\mysql.exe',
+    [switch]$ResetAppPassword
+)
 
 $ErrorActionPreference = 'Stop'
 if (-not (Test-Path -LiteralPath $MySqlExe)) {
@@ -39,6 +42,12 @@ function Invoke-LocalMySql {
         $errorText = $stderr.GetAwaiter().GetResult()
         if ($process.ExitCode -ne 0) {
             $code = if ($errorText -match 'ERROR\s+(\d+)') { $matches[1] } else { 'unknown' }
+            if ($User -eq 'fraud_app' -and $code -eq '1045') {
+                throw 'The fraud_app login does not match MYSQL_PASSWORD in the root .env. Set .env to the existing password, or intentionally synchronize the local account by rerunning: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-native-mysql.ps1 -ResetAppPassword. Database records are preserved; other apps using this MySQL account must use the new password.'
+            }
+            if ($User -eq 'root' -and $code -eq '1045') {
+                throw 'MySQL rejected the root password. Rerun setup with your MySQL root password (not MYSQL_PASSWORD from .env). No application password was changed.'
+            }
             throw "MySQL failed for $User (error $code). Check the service and credentials; an existing user's password is never reset."
         }
     } finally { $process.Dispose() }
@@ -57,6 +66,12 @@ CREATE USER IF NOT EXISTS 'fraud_app'@'localhost' IDENTIFIED BY '$escapedPasswor
 GRANT ALL PRIVILEGES ON fraud_db.* TO 'fraud_app'@'localhost';
 "@
     Invoke-LocalMySql 'root' $rootPassword $sql
+    if ($ResetAppPassword) {
+        # Opt-in repair only: preserve the normal setup policy for existing users.
+        # Synchronize just the local application account; never reset root or delete data.
+        $resetSql = "SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'; ALTER USER 'fraud_app'@'localhost' IDENTIFIED BY '$escapedPassword';"
+        Invoke-LocalMySql 'root' $rootPassword $resetSql
+    }
     Invoke-LocalMySql 'fraud_app' $appPassword 'USE fraud_db; SELECT 1;'
     Write-Output 'fraud_db and fraud_app are ready. Flyway will create application tables on backend startup.'
 } finally {
@@ -64,5 +79,7 @@ GRANT ALL PRIVILEGES ON fraud_db.* TO 'fraud_app'@'localhost';
     $rootSecure.Dispose()
     $rootPassword = $null
     $sql = $null
+    $resetSql = $null
+    $appPassword = $null
     $escapedPassword = $null
 }

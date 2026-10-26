@@ -2,9 +2,9 @@
 // For fast expiry checks launch with REVIEW_TTL_SECONDS=30 and CONFIRMATION_TTL_SECONDS=30.
 import assert from 'node:assert/strict';
 import {randomBytes,randomUUID,createHmac} from 'node:crypto';
-import {readFileSync,writeFileSync,mkdirSync} from 'node:fs';
+import {readFileSync,writeFileSync,mkdirSync,existsSync} from 'node:fs';
 const root=new URL('../',import.meta.url),base='http://127.0.0.1:8080/api',stamp=Date.now(),checks=[],credentials=[];
-function env(name){return Object.fromEntries(readFileSync(new URL(name,root),'utf8').replace(/^\uFEFF/,'').split(/\r?\n/).filter(l=>l.trim()&&!l.startsWith('#')&&l.includes('=')).map(l=>{const i=l.indexOf('=');return[l.slice(0,i).trim(),l.slice(i+1).trim().replace(/^['"]|['"]$/g,'')];}));}
+function env(name){if(name==='.env.development'&&existsSync(new URL('.local/runtime-dev.env',root)))name='.local/runtime-dev.env';if(name==='.env'&&existsSync(new URL('.local/runtime.env',root)))name='.local/runtime.env';return Object.fromEntries(readFileSync(new URL(name,root),'utf8').replace(/^\uFEFF/,'').split(/\r?\n/).filter(l=>l.trim()&&!l.startsWith('#')&&l.includes('=')).map(l=>{const i=l.indexOf('=');return[l.slice(0,i).trim(),l.slice(i+1).trim().replace(/^['"]|['"]$/g,'')];}));}
 async function req(path,token,body,options={}){const r=await fetch(base+path,{method:options.method||(body===undefined?'GET':'POST'),headers:{'Content-Type':'application/json','Idempotency-Key':options.key||randomUUID(),...(token?{Authorization:'Bearer '+token}:{})},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000)});assert.equal(r.status,options.status??200,path+' HTTP status');if(options.raw)return r;const text=await r.text();return text?JSON.parse(text):null;}
 function pass(s){checks.push(s);console.log('PASS '+s);}
 async function user(label,initial='30000.00',currency='USD'){const c={email:`workspace-${label}-${stamp}@example.test`,password:randomBytes(20).toString('hex'),fullName:'Workspace '+label};credentials.push(c);const auth=await req('/auth/register',null,c);const account=await req('/accounts',auth.token,{accountType:'CHECKING',currency,initialBalance:initial});return {...c,token:auth.token,account};}

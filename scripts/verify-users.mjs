@@ -1,14 +1,14 @@
 // Real API checks. Creates two isolated development users; never prints credentials.
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
-import {readFileSync,writeFileSync,mkdirSync} from 'node:fs';
+import {readFileSync,writeFileSync,mkdirSync,existsSync} from 'node:fs';
 const root=new URL('../',import.meta.url),base='http://127.0.0.1:8080/api';
 const stamp=Date.now(),label='Directory verification '+stamp;
 const credentials=[0,1].map(n=>({email:`directory-${stamp}-${n}@example.test`,password:randomBytes(20).toString('hex'),fullName:label+(n?' Second':' % First')}));
 mkdirSync(new URL('.local/',root),{recursive:true});
 writeFileSync(new URL(`.local/users-verification-${stamp}.json`,root),JSON.stringify(credentials,null,2));
 async function request(path,token,body,status=200){const response=await fetch(base+path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},body:body?JSON.stringify(body):undefined});assert.equal(response.status,status,path+' HTTP status');return response.json();}
-const dev=Object.fromEntries(readFileSync(new URL('.env.development',root),'utf8').replace(/^\uFEFF/,'').split(/\r?\n/).filter(l=>l.includes('=')&&!l.trim().startsWith('#')).map(l=>{const i=l.indexOf('=');return[l.slice(0,i).trim(),l.slice(i+1).trim().replace(/^['"]|['"]$/g,'')];}));
+const dev=Object.fromEntries(readFileSync(new URL(existsSync(new URL('.local/runtime-dev.env',root))?'.local/runtime-dev.env':'.env.development',root),'utf8').replace(/^\uFEFF/,'').split(/\r?\n/).filter(l=>l.includes('=')&&!l.trim().startsWith('#')).map(l=>{const i=l.indexOf('=');return[l.slice(0,i).trim(),l.slice(i+1).trim().replace(/^['"]|['"]$/g,'')];}));
 const first=await request('/auth/register',null,credentials[0]);
 await request('/auth/register',null,credentials[1]);
 const admin=await request('/auth/login',null,{email:dev.DEV_ADMIN_EMAIL,password:dev.DEV_ADMIN_PASSWORD});

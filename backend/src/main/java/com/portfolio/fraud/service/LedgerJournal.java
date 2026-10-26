@@ -11,7 +11,8 @@ import org.springframework.transaction.annotation.*;
 @Service @Transactional(propagation=Propagation.MANDATORY)
 public class LedgerJournal {
     private final JdbcTemplate db;
-    public LedgerJournal(JdbcTemplate db){this.db=db;}
+    private final org.springframework.context.ApplicationEventPublisher publisher;
+    public LedgerJournal(JdbcTemplate db,org.springframework.context.ApplicationEventPublisher publisher){this.db=db;this.publisher=publisher;}
     public void audit(Long actor,String action,Transaction tx,String previous,String reason) {
         db.update("INSERT INTO audit_events(actor_id,action,transaction_id,previous_status,new_status,reason) VALUES(?,?,?,?,?,?)",
             actor,action,tx==null?null:tx.getId(),previous,tx==null?null:tx.getStatus().name(),reason);
@@ -26,6 +27,7 @@ public class LedgerJournal {
         }
         if(tx.getStatus()!=TransactionStatus.COMPLETED || previous!=null)
             notify(tx.getInitiatedBy().getId(),tx,tx.getStatus().name(),reason);
+        publisher.publishEvent(new TransactionStateChanged(tx.getId(),tx.getStatus()));
     }
     private void movement(Transaction tx,Account a,java.math.BigDecimal amount,Instant now) {
         db.update("INSERT INTO ledger_movements(account_id,transaction_id,amount,occurred_at) VALUES(?,?,?,?)",a.getId(),tx.getId(),amount,Timestamp.from(now));
